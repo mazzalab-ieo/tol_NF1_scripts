@@ -1,0 +1,909 @@
+---
+title: "Analysis of damaged sites and intatubular repair"
+author: "Giulia Tini"
+date: "3/13/2024"
+output: html_document
+---
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+library(readxl)
+library(tidyverse)
+library(slider)
+library(RColorBrewer)
+library(cowplot)
+library(pracma)
+library(confintr)
+library(ggpubr)
+library(ggsci)
+library(knitr)
+library(strucchange)
+library(ggdist)
+library(coin)
+
+setwd("~/Rescue")
+
+source("scripts/holes_length.R")
+source("scripts/opt_bpts.R")
+source("scripts/tips.R")
+source("scripts/peaks_definition.R")
+source("scripts/peaks_bymicron.R")
+source("scripts/profile_plot.R")
+```
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+## upload data n.1 ctrl
+all_ctrl<- read_excel("data/5. RESULTS EXP2.xlsx", sheet = "MT control ")
+colnames(all_ctrl)[1]<-"Microns"
+all_ctrl$Case<-"Control"
+
+# nf1
+all_NF1 <- read_excel("data/5. RESULTS EXP2.xlsx", sheet = "MT + NF1")
+colnames(all_NF1)[1]<-"Microns"
+all_NF1$Case<-"NF1"
+
+#dm1
+all_DM1 <- read_excel("data/5. RESULTS EXP2.xlsx", sheet = "MT + DM1")
+colnames(all_DM1)[1]<-"Microns"
+all_DM1$Case<-"DM1"
+
+# nf1+dm1
+all_NF1_DM1 <- read_excel("data/5. RESULTS EXP2.xlsx", sheet = "MT + DM1 + NF1 ")
+colnames(all_NF1_DM1)[1]<-"Microns"
+all_NF1_DM1$Case<-"NF1_DM1"
+
+all_data_1<-rbind(all_ctrl,all_NF1,all_DM1,all_NF1_DM1)
+all_data_1$Experiment<-1
+```
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+## upload data n.2
+# ctrl
+all_ctrl_2<- read_excel("data/5. RESULTS EXP2_second.xlsx", sheet = "MT control")
+colnames(all_ctrl_2)[1]<-"Microns"
+all_ctrl_2$Case<-"Control"
+
+# nf1
+all_NF1_2 <- read_excel("data/5. RESULTS EXP2_second.xlsx", sheet = "MT + NF1")
+colnames(all_NF1_2)[1]<-"Microns"
+all_NF1_2$Case<-"NF1"
+
+#dm1
+all_DM1_2 <- read_excel("data/5. RESULTS EXP2_second.xlsx", sheet = "MT + DM1")
+colnames(all_DM1_2)[1]<-"Microns"
+all_DM1_2$Case<-"DM1"
+
+# nf1+dm1
+all_NF1_DM1_2 <- read_excel("data/5. RESULTS EXP2_second.xlsx", sheet = "MT + DM1 + NF1")
+colnames(all_NF1_DM1_2)[1]<-"Microns"
+all_NF1_DM1_2$Case<-"NF1_DM1"
+
+all_data_2<-rbind(all_ctrl_2,all_NF1_2,all_DM1_2,all_NF1_DM1_2)
+all_data_2$Microtubule<-as.numeric(all_data_2$Microtubule)
+all_data_2$Tubulin<-as.numeric(all_data_2$Tubulin)
+all_data_2$Experiment<-2
+```
+
+#### Data analysis
+
+Let's have a first look on how data look like, printing statistics and the original microtubule intensity.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+#number of microtubules and their length by condition
+all_data<- rbind(all_data_1,all_data_2)
+all_data <- all_data %>%
+  mutate(ID=paste(Name,Experiment,sep="_"))
+
+all_data %>%
+  group_by(Case,Name,Experiment) %>% 
+  summarize(start=min(Microns),end=max(Microns),length=end-start) %>%
+  ungroup() %>%
+  group_by(Case, Experiment) %>%
+  summarize(tot=n(),min_length=min(length),max_length=max(length),average_length=mean(length)) %>%kable()
+            
+cols<-pal_jco("default")(10)[c(1,5)]
+
+all_data %>%
+  group_by(Case,Name,Experiment) %>% 
+  summarize(start=min(Microns),end=max(Microns),length=end-start) %>%
+  ungroup() %>%
+  group_by(Case, Experiment) %>%
+  summarize(tot=n()) %>%
+  ggplot()+
+  geom_bar(aes(x=Case,y=tot,fill=as.factor(Experiment)),stat="identity", position="dodge",alpha=0.9)+
+  scale_fill_manual(values=cols)+
+  labs(x="",y="N. microtubules",fill="Experiment")+
+  theme_classic(base_size = 20)
+
+#plot check
+all_data %>%
+  ggplot()+
+  geom_line(aes(x=Microns,y=Microtubule,color=Name),alpha=0.7)+
+  facet_wrap(~Case+Experiment,scales="free_y",nrow=4)+#Experiment,nrow=4)+
+  labs(title="Microtubule intensity",y="Intensity")+
+  guides(color=FALSE)+
+  theme_classic(base_size = 20)
+```
+
+#### Preprocessing
+
+We computed the Normalized Intensity [0,100] on the signal intensity and then its Rolling Mean (RM) with a window=2, to stabilize the signal.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+#add rolling mean and normalized intensity
+window<-2
+
+mean_all<-all_data %>% 
+  group_by(Case,Name,Experiment) %>%
+  mutate(position=1:n()) %>%
+  mutate(Norm_int=(Microtubule-min(Microtubule))/(max(Microtubule)-min(Microtubule))*100,
+         RM_Norm=slide_dbl(Norm_int, mean, .before = window, .after = window),
+         RM_tub=slide_dbl(Tubulin, mean, .before = window, .after = window)) %>%
+  ungroup()
+
+g1<-ggboxplot(mean_all , x = "Experiment", y = "Norm_int", color = "Experiment",
+              facet.by = "Case",
+              title="Normalized Intensity in different conditions",
+              ylab="Normalized Intensity",
+          palette = "jco") +
+  stat_compare_means(method="t.test")+
+  guides(color=FALSE)+
+  theme_classic(base_size = 20)
+g1
+
+g2<-ggboxplot(mean_all , x = "Experiment", y = "RM_Norm", color = "Experiment",
+              facet.by = "Case",
+              title="Normalized Intensity (RM) in different conditions",
+              ylab="Normalized Intensity (RM)",
+          palette = cols) +
+  stat_compare_means(method="t.test",label.x.npc = "center",
+  label.y.npc = "top",size=5)+
+  guides(color=FALSE)+
+  theme_classic(base_size = 20)
+g2
+
+```
+
+#### Tips and body identification
+
+We need to define the body of the microtubule, which can change from experiment to experiment. We can use the tubulin at the extremes of the microtubule: the first and last peak should identify the tips.
+
+For the analysis we considered only the signal coming from the body of the microtubule and considered only microtubules with body length >1.5 microns
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+#in this way we have the position of the peak, not the microns
+start_end_comp<-mean_all %>% #all_data %>% 
+  group_by(Case,Name,Experiment) %>% 
+  group_modify(~ tips(.x,"RM_tub")) %>%
+  mutate(ID=paste(Name,Experiment,sep="_"))
+
+tips_identification<-left_join(start_end_comp,mean_all,by=c("Case","Name","Experiment","ID"))
+tips_identification_1 <- tips_identification %>% 
+  group_by(Case,Name,Experiment,ID) %>% 
+  summarize(start=start,
+            end=end,
+            start_c=Microns[start],
+            end_c=Microns[end],
+            ltot=end_c-start_c,
+            remove=ifelse(ltot<1.5,"Yes","No")) %>%
+  distinct()
+
+print("The following microtubules were removed due to signal length smaller than 2:")
+print(tips_identification_1 %>% filter(remove=="Yes") %>%
+        mutate(Mic=paste(Case,Name,Experiment,sep=":")) %>%
+        .$Mic)
+
+first_step_new_tips<-left_join(tips_identification_1,mean_all,by=c("Case","Name","Experiment","ID"))
+first_step_new_tips <- first_step_new_tips%>% 
+  filter(remove=="No") %>%
+  select(-remove)
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, fig.dim = c(14, 12)}
+first_step_new_tips %>% group_by(Case,Name,Experiment) %>%
+  filter(Microns>=start_c & Microns<=end_c) %>%
+  ggplot()+
+  geom_boxplot(aes(y=RM_Norm,x=ID, group=ID))+
+  facet_wrap(~Case+Experiment,scale="free_x")+
+  theme_bw()
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, fig.dim=c(14, 12)}
+final_data<- first_step_new_tips %>%
+  group_by(Case,Name,Experiment,ID) %>%
+  mutate(mean_RM=mean(RM_Norm[which(Microns>=start_c & Microns<=end_c)]),
+         stdev_RM=sd(RM_Norm[which(Microns>=start_c & Microns<=end_c)]),
+         Signal_RMmean=ifelse(RM_Norm>=mean_RM,1,0)
+         )
+```
+
+#### Holes identification with adaptive threshold
+
+Now we will identify "adaptive" mean of the microtubule normalized intensity. The analysis first identifies breakpoints (where there is a significant change in the trend), which divide the microtubule in segments. Then we compute a linear model on each segment and consider the coefficient of regression as representative of that segment. The maximum between that value and the mean along all the microtubule is our threshold to define holes, defined as intervals with intensity below the threshold.
+To avoid considering holes with a too high intensity, we set the maximum of the threshold to 70%.
+
+Our main holes will have a minimum length of 0.5 microns.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+pvalue<-numeric()
+opt_breaks<-numeric()
+breakpoints<-list()
+case<-character()
+name<-character()
+coeff_m0<-numeric()
+
+case_nr<-character()
+name_nr<-character()
+M0<-numeric()
+M1<-numeric()
+
+i<-0
+for (el in unique(final_data$Case))
+{
+  dd<-final_data %>% filter(Case==el)
+  for (nel in unique(dd$ID))
+  {
+    case<-c(case,el)
+    name<-c(name,nel)
+    
+    print(paste(el,"",nel))
+    
+    i<-i+1
+    prova<-dd %>% 
+      filter(ID==nel)
+    
+    ocus <- efp(prova$RM_Norm ~ 1, type = "OLS-CUSUM")
+    sc<-sctest(ocus)
+    pvalue<-c(pvalue,sc$p.value)
+    
+    bp <- breakpoints(prova$RM_Norm ~ 1)
+    breakpoints[[i]]<-bp$breakpoints
+    
+    bpts_sum <- summary(bp)
+    #quanti sono gli optimal break points?
+    opt_brks <- opt_bpts(bpts_sum$RSS["BIC",])
+
+    opt_breaks<-c(opt_breaks,min(opt_brks))
+    
+    #null model
+    fm0 <- lm(prova$RM_Norm ~ 1)
+    coeff_m0<-c(coeff_m0,coef(fm0))
+    
+    case_nr<-c(case_nr,rep(el,nrow(prova)))
+    name_nr<-c(name_nr,rep(nel,nrow(prova)))
+    
+    M0<-c(M0,rep(coef(fm0),nrow(prova)))
+          
+    if (!(is.na(min(opt_brks))))
+    {
+    k<-which.min(opt_brks)
+    ci <- confint(bp, breaks = opt_brks[k])
+    
+    # breakpoint model
+    fac <- breakfactor(bp, breaks = opt_brks[k])
+    fm1 <- lm(prova$RM_Norm ~ fac - 1)
+    
+    M1<-c(M1,fitted(fm1))
+    
+    op <- par(mfrow = c(1,1))
+    
+    ##OPTIONAL: print the breakpoints and trends
+    #plot(prova$RM_Norm,
+    #     main=paste(prova$Case[1],prova$ID[1],sep=":"))
+    
+    #lines(ts(fitted(fm0), start = 0), col = 3)
+    #lines(ts(fitted(fm1), start = 0), col = 4)
+    #abline(h=70, col="magenta",lty=2)
+    } else
+    {
+      M1<-c(M1,rep(NA,nrow(prova)))
+    }
+  }
+}
+
+breaks<-data.frame(Case=case, ID=name,pvalue=pvalue,opt_breaks=opt_breaks,coeff_null_model=coeff_m0)
+
+breaks<-left_join(breaks,final_data[,c("Case","ID","mean_RM")],by=c("Case","ID")) %>%
+  distinct(Case, ID, .keep_all = TRUE)
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+fitted_means<-data.frame(Case=case_nr,ID=name_nr,model_0=M0,steps=M1)
+
+data_moreMeans<-cbind(final_data,fitted_means[,c("model_0","steps")])
+
+data_moreMeans <- data_moreMeans %>% 
+  group_by(Case,ID,position) %>%
+  mutate(max_thr=max(mean_RM,steps,na.rm=TRUE),
+         Signal_adaptive=ifelse(RM_Norm>=max_thr,1,0),
+         adap_70=ifelse(max_thr<70,max_thr,70),
+         Signal_adaptive_70=ifelse(RM_Norm>=adap_70,1,0))
+
+#fix the signal for the elements out of the interval
+data_moreMeans <- data_moreMeans %>% 
+  mutate(Signal_adaptive=ifelse((Microns<start_c | Microns>end_c),2,Signal_adaptive),
+         Signal_adaptive_70=ifelse((Microns<start_c | Microns>end_c),2,Signal_adaptive_70))
+
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+## length of holes in the body
+data_check<-data_moreMeans %>% group_by(Case,ID) %>%
+  mutate(Name=ID) %>%
+     filter(Microns>=start_c & Microns<=end_c) %>%
+     ungroup()
+
+holes<-holes_length(data_check,"Signal_adaptive_70",0.2,0.5)
+
+dcn_fin_holes<-holes[[1]]
+dcn_fin_holes$ID<-dcn_fin_holes$Name
+dcn_fin_holes<-left_join(dcn_fin_holes,start_end_comp[c("Case","ID","Experiment")], by=c("Case","ID"))
+
+dcn_final_try<-holes[[2]]
+dcn_final<-left_join(dcn_final_try,start_end_comp[c("Case","ID","start")],by=c("Case","Name"="ID"))
+dcn_final<-dcn_final %>% 
+  mutate(position=position+start-1,
+                                ID=Name) %>%
+  select(!c(start,Name))
+
+final_data<-left_join(data_moreMeans,dcn_final[,-1],by=c("Case","ID","position"))
+
+final_data <-final_data %>% 
+  mutate(Hole_general=ifelse(Signal_adaptive_70==2,"Tail",
+                             ifelse(Hole_general=="Yes","Hole","Microtubule")),
+         Hole_05=ifelse(Signal_adaptive_70==2,"Tail",
+                        ifelse(Hole_05=="Yes","Hole","Microtubule")))
+```
+
+### Holes analysis
+
+How many holes longer than 0.5 microns did we found for each microtubule?
+
+Also, how many holes in general (at least 0.2 microns) and which is their length?
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+tot_holes_any<- dcn_fin_holes %>% group_by(Case,ID,Experiment) %>%
+  filter(Hole_general=="Yes") %>%
+  filter(ltot>0.2) %>%
+  summarize(tot=n())
+
+summ_final_any<-tot_holes_any %>% 
+  group_by(Case,Experiment) %>%
+  summarize(mean=mean(tot),min=min(tot),
+            median=median(tot),max=max(tot))
+
+kable(summ_final_any)
+
+my_comparisons <- list( c("Control", "DM1"), c("Control", "NF1"), c("Control", "NF1_DM1"))
+
+tot_holes_any$Experiment<-factor(tot_holes_any$Experiment, levels=c("1","2"))
+
+ggboxplot(tot_holes_any , x = "Case", y = "tot", color="Case",
+              title="N. holes of any length (>0.2 microns)",
+              ylab="N. holes",
+          palette = "jco",
+          add=c("jitter","mean"))+
+  stat_compare_means(comparisons=my_comparisons,method = "t.test")
+
+tot_holes<-dcn_fin_holes %>% group_by(Case,ID,Experiment) %>%
+  filter(Hole_05=="Yes") %>%
+  summarize(tot=n()) 
+
+
+summ_final<-tot_holes %>% 
+  group_by(Case,Experiment) %>%
+  summarize(mean=mean(tot),min=min(tot),
+            median=median(tot),var=var(tot),max=max(tot))
+
+kable(summ_final)
+
+#permutation test with two exp together
+permut_test_two<-formatC(c(pvalue(oneway_test(tot ~ as.factor(Case), data=tot_holes %>% filter(Case %in% c("Control","DM1")))),
+               pvalue(oneway_test(tot ~ as.factor(Case), data=tot_holes %>% filter(Case %in% c("Control","NF1")))),
+               pvalue(oneway_test(tot ~ as.factor(Case), data=tot_holes %>% filter(Case %in% c("Control","NF1_DM1"))))),
+               format = "e", digits = 2)
+
+names(permut_test_two)<-c("Control - DM1","Control - NF1","Control - NF1+DM1")
+
+kable(permut_test_two, col.names =c("Comparison","pvalue"),caption = "Permutation test, n.damages >0.5 microns")
+
+mycols_red<-c(brewer.pal(5,"Greys")[c(2,3,4)],brewer.pal(5,"Reds")[c(2,3,4)])
+
+thp<-tot_holes %>% 
+  group_by(Case) %>%
+  mutate(totcase=n()) %>%
+  ungroup() %>%
+  group_by(Case,tot) %>%
+  summarize(count=n(), perc=round(count/totcase*100,2)) %>%
+  distinct()
+
+thp_2<-thp %>%
+  mutate(perc=ifelse(Case %in% c("DM1","NF1_DM1"),perc,-perc),
+         NF1=ifelse(Case %in% c("NF1","NF1_DM1"),"+NF1","Control"),
+         DM1=ifelse(Case %in% c("DM1","NF1_DM1"),"+DM1","-DM1"))
+
+dat_text2 <- data.frame(
+  label = paste(c("-DM1\n n=","+DM1\n n=","-DM1\n n=","+DM1\n n="),unique(tot_holes %>% 
+  group_by(Case) %>%
+  summarize(totcase=n()) %>%.$totcase),sep=""),
+  NF1  = c('Control', 'Control', '+NF1','+NF1')
+) %>%
+  mutate(NF1=factor(NF1, levels=c("Control","+NF1")))
+
+
+tot_holes %>% 
+  group_by(Case,tot) %>%
+  summarize(count=n()) %>%
+  mutate(tot_f=factor(tot,levels=c(1,2,3,4,5,6),labels=c("1","2","3","4","≥5","≥5"))) %>% 
+  ggplot()+
+  geom_bar(aes(x=Case,y=count,fill=tot_f),position="fill",stat="identity", width = 0.5)+
+  scale_fill_brewer()+ 
+  scale_x_discrete(labels=c("Control","DM1","NF1","NF1+DM1"))+
+  scale_y_continuous(breaks=c(0,0.25,0.5,0.75,1),labels=c(0,25,50,75,100))+
+  labs(y="Microtubule (%)",fill="N. of damaged sites",title="N. damaged sites >0.5 microns")+
+  theme_classic(base_size = 20)
+
+```
+
+#### Identification of tubulin repair
+
+Let's start again with a first overview of the tubulin intensity in the microtubules selected by their length.
+```{r echo=FALSE, message=FALSE, warning=FALSE, fig.dim= c(12, 10)}
+#plot check
+final_data %>%
+  filter(Microns>=start_c & Microns<=end_c) %>%
+  ggplot()+
+  geom_line(aes(x=Microns,y=Tubulin,color=ID),alpha=0.7)+
+  facet_wrap(~Case+Experiment,nrow=4)+
+  guides(color=FALSE)+
+  theme_classic(base_size=20)
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, fig.dim= c(12, 10)}
+data_tub<-final_data %>% group_by(Case,ID) %>% 
+  mutate(RM_tub=slide_dbl(Tubulin, mean, .before = window, .after = window),
+         NI_tub=(Tubulin-min(Tubulin))/(max(Tubulin)-min(Tubulin))*100) %>%
+  ungroup()
+
+ggboxplot(final_data, x = "Experiment", y = "RM_tub", color = "Experiment",
+              facet.by = "Case",
+              title="Tubulin Intensity (RM) in different conditions",
+              ylab="Tubulin Intensity (RM)",
+          palette = cols) +
+  stat_compare_means(method="t.test",label.x.npc = "center",
+  label.y.npc = "top",size=5)+
+  guides(color=FALSE)+
+  theme_classic(base_size = 20)
+
+mean_tub<-data_tub %>% group_by(Case,ID) %>%
+  filter(Microns>=start_c & Microns<=end_c) %>%
+  #ungroup() %>%
+  summarize(mean_tub=mean(Tubulin),
+            median_tub=median(Tubulin),
+            q75_tub=quantile(Tubulin,0.75),
+            meanRM_tub=mean(RM_tub),
+            q25_RMtub=quantile(RM_tub,0.25),
+            q50_RMtub=quantile(RM_tub,0.5),
+            q75_RMtub=quantile(RM_tub,0.75),
+            q90_RMtub=quantile(RM_tub,0.90)
+            )
+
+# I want only the signal in the body
+tub_bycondition<-data_tub %>% group_by(Case,Experiment) %>%
+  filter(Microns>=start_c & Microns<=end_c) %>%
+  summarize(mean_RMtub_condition=mean(RM_tub),
+            sd_RMtub_condition=sd(RM_tub),
+    q25_RMtub_condition=quantile(RM_tub,0.25),
+    q50_RMtub_condition=quantile(RM_tub,0.5),
+    q75_RMtub_condition=quantile(RM_tub,0.75),
+    q90_RMtub_condition=quantile(RM_tub,0.9),
+    iqr=IQR(RM_tub),
+    tmax=q75_RMtub_condition+1.5*iqr)
+
+kable(tub_bycondition)
+```
+#### Identification of tubulin signal on the tips 
+
+We want to identify a threshold for the background tubulin on the Control case, to remove peaks with higher intensity.
+For each microtubule in the Control, we will find the maximum value on the tips and then compute a distribution. This should describe, in terms of tubulin, the total intensity of the microtubule, and then we can infer a background threshold as 25% of the median value.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, fig.dim= c(12, 10)}
+
+max_tub_tips<-data_tub %>% 
+  filter(Case=="Control") %>% group_by(Experiment,ID) %>%
+  filter(Microns<start_c || Microns>end_c) %>%
+  summarize(max=max(RM_tub))
+
+maxp<-max_tub_tips %>% ggplot() +
+  stat_halfeye(aes(x=max,fill = after_stat(level)), .width = c(.66, .95, 1))+ 
+  scale_fill_brewer()+
+  facet_wrap(~Experiment)+
+  theme_classic(base_size = 20)+
+  labs(x="Tubulin intensity",y="Density",title="Distribution of tubulin peaks in the tips")
+
+maxp
+
+##GROUP BY EXPERIMENT
+thr_peaks<-max_tub_tips %>% 
+  group_by(Experiment) %>%
+  summarize(med=median(max),thr1=med*0.25,
+  thr2=med*0.2)
+```
+
+#### Peaks in tubulin intensity
+
+We take the 75th percentile of the tubulin intensity (Rolling Mean with window=2) as minimum height to define peaks (R function findpeaks). To find the peaks we consider a pattern where there are at least 4 increasing and 4 decreasing points.
+We then remove peaks with height lower than the threshold defined above, to avoid background fluctuations.
+
+We also reduce the width of the peaks by considering the part of the peak lying over the 50th percentile. In this way we can consider only the significant contribution of the tubulin.
+
+```{r echo=FALSE}
+peaks_1<-peaks_definition(data_tub,tub_bycondition,4,"q75_RMtub_condition")
+
+peaks_75<-left_join(peaks_1,thr_peaks,by="Experiment")
+  
+peaks_75<-peaks_75 %>% 
+  filter(Height_peak>=thr2)
+
+peaks_75<-left_join(peaks_75,tub_bycondition,by=c("Case","Experiment"))
+
+peaks_bymic_75<-peaks_bymicron(data_tub,peaks_75,tub_bycondition,"q50_RMtub_condition")
+```
+
+
+Let's also check for peaks that goes above the 50th percentile, to check if we find something else when NF1 is added. For those peaks the width taken on the 25th percentile.
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+peaks_2<-peaks_definition(data_tub,tub_bycondition,4,"q50_RMtub_condition")
+
+peaks_50<-left_join(peaks_2,thr_peaks,by="Experiment")
+  
+peaks_50<-peaks_50 %>% 
+  filter(Height_peak>=thr2)
+
+peaks_50<-left_join(peaks_50,tub_bycondition,by=c("Case","Experiment"))
+
+extra<-anti_join(peaks_50,peaks_75)
+
+peaks_bymic_50<-peaks_bymicron(data_tub,extra,tub_bycondition,"q25_RMtub_condition")
+colnames(peaks_bymic_50)[4]<-"Is_peak_50"
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+peaks_bymic_try<-full_join(peaks_bymic_75,peaks_bymic_50, by=c("Case","ID","position"))
+
+peaks_bymic <- peaks_bymic_try %>%
+  group_by(Case,ID,position) %>% 
+  mutate(Is_peak=max(Is_peak,Is_peak_50,na.rm=TRUE)) %>%
+  select(-Is_peak_50)
+
+data_tub_final<-left_join(data_tub,peaks_bymic)
+
+data_tub_final <- data_tub_final %>% 
+  mutate(Internal_peak=ifelse((Is_peak==0| is.na(Is_peak)),"No","Yes")) %>%
+  mutate(Internal_peak=ifelse(Hole_05=="Tail","Tail",Internal_peak))
+
+## check also quantity of repair
+data_tub_final <- data_tub_final %>% 
+  mutate(Filled=ifelse((Hole_05=="Hole" & Internal_peak=="Yes"),"Repaired",
+                              ifelse((Hole_05=="Hole" & Internal_peak=="No"),"Unrepaired",
+                                     Hole_05)))
+
+data_tub_final$Filled<-factor(data_tub_final$Filled, levels=c("Tail","Microtubule","Unrepaired","Repaired"))
+```
+
+#### Analysis
+
+Now let's analyze the correlation between holes and tubulin peaks. 
+We consider:
+- the percentage of repaired holes (complete and partial repair)
+- the percentage of tubulin peaks that are used to repair holes.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+keep<-rep(0,nrow(peaks_50)) #is the peak internal to the body?
+for (i in 1:nrow(peaks_50))
+  {
+      pp<-peaks_50$Position_peak[i]
+      el<-peaks_50$Case[i]
+      nel<-peaks_50$ID[i]
+      
+      dd1<-data_tub_final %>% filter(Case==el & ID==nel)
+      
+      if (dd1$Microns[pp]>=dd1$start_c[pp] & dd1$Microns[pp]<=dd1$end_c[pp])
+        keep[i]<-1
+}
+
+peaks_50_internal <-peaks_50 %>% mutate(keep=keep) %>%
+  filter(keep==1)
+
+tot_peaks_bymic<-peaks_50_internal %>% group_by(Case,ID) %>% summarize(tot_peaks=n())
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, fig.dim=c(12, 10)}
+corHP<-data_tub_final %>% 
+  group_by(Case,ID) %>% 
+  filter(!(Hole_05=="Tail")) %>%
+  mutate(Hole_05_bin=ifelse(Hole_05=="Hole",1,0),
+         Hole_general_bin=ifelse(Hole_general=="Hole",1,0),
+         Peak_bin=ifelse(Internal_peak=="Yes",1,0)
+         )
+
+corHP_sum<-corHP %>%
+  group_by(Case,ID) %>% 
+  filter(!(Hole_05=="Tail")) %>%
+  summarize(corRM=cor(RM_tub,RM_Norm),
+            tot_pos_peak=sum(Peak_bin),
+            tot_pos_hole=sum(Hole_05_bin),
+            #intersection=sum(Peak_bin*Hole_05_bin),
+            meanTub_hole=mean(RM_tub[which(Hole_05_bin==1)],na.rm=TRUE),
+            meanTub_nonhole=mean(RM_tub[which(Hole_05_bin==0)],na.rm=TRUE)
+            )
+
+holes_peaks<-left_join(tot_holes,tot_peaks_bymic)
+holes_peaks<-left_join(holes_peaks,corHP_sum)
+
+lrep<-numeric()
+c1<-character()
+c2<-character()
+for (i in 1:nrow(holes_peaks))
+{
+  el<-holes_peaks$Case[i]
+  nel<-holes_peaks$ID[i]
+  
+  dtf<-subset(data_tub_final,(Case==el & ID==nel)) %>%
+  filter(Microns>=start_c & Microns<=end_c) %>%
+  mutate(Filled=as.character(Filled))
+  
+  rl<-rle(dtf$Filled)
+  
+  lrep<-c(lrep,length(which(rl$values=="Repaired")))
+  c1<-c(c1,el)
+  c2<-c(c2,nel)
+}
+
+repairs<-data.frame(Case=c1,ID=c2,repairs=lrep)
+
+holes_peaks<-left_join(holes_peaks, repairs)
+
+holes_peaks <- holes_peaks %>% mutate(repairs_oneby=ifelse(repairs>tot,tot,repairs))
+
+holes_peaks <- holes_peaks %>% mutate(tot_peaks=ifelse(is.na(tot_peaks),0,tot_peaks),
+                                      frac_repaired_holes=round(repairs_oneby/tot,2),
+                                      perc_repaired_holes=round(repairs_oneby/tot*100,2),
+                                      frac_peaks_torepair=round(repairs/tot_peaks,2),
+                                      perc_peaks_torepair=round(repairs/tot_peaks*100,2),
+                                      not_repaired_holes=tot-repairs_oneby
+                                      )
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+holes_peaks$perc_repaired_holes_fac<-factor(holes_peaks$perc_repaired_holes,levels=sort(unique(holes_peaks$perc_repaired_holes)))
+
+### plots: repair
+trep<-holes_peaks %>% 
+  group_by(Case) %>%
+  mutate(totcase=n()) %>%
+  ungroup() %>%
+  group_by(Case,repairs_oneby) %>%
+  summarize(count=n(), perc=round(count/totcase*100,2)) %>%
+  distinct()
+
+trep_2<-trep %>%
+  mutate(perc=ifelse(Case %in% c("DM1","NF1_DM1"),perc,-perc),
+         NF1=ifelse(Case %in% c("NF1","NF1_DM1"),"+NF1","Control"),
+         DM1=ifelse(Case %in% c("DM1","NF1_DM1"),"+DM1","-DM1"))
+
+dat_text2 <- data.frame(
+  label = paste(c("-DM1\n n=","+DM1\n n=","-DM1\n n=","+DM1\n n="),unique(holes_peaks %>% 
+  group_by(Case) %>%
+  summarize(totcase=n()) %>%.$totcase),sep=""),
+  NF1  = c('Control', 'Control', '+NF1','+NF1')
+) %>%
+  mutate(NF1=factor(NF1, levels=c("Control","+NF1")))
+
+trep_2 %>%
+  mutate(tot_f=factor(repairs_oneby,levels=c(0,1,2,3,4,5,6))) %>% 
+  mutate(NF1=factor(NF1, levels=c("Control","+NF1"))) %>%
+  ggplot()+
+ geom_bar(aes(x=repairs_oneby, y=perc,fill=DM1),#interaction(tot_f,DM1)),
+               stat="identity")+
+  scale_fill_manual(values=mycols_red[c(2,6)])+
+  facet_wrap(~NF1)+
+  #coord_flip()+
+  geom_hline(aes(yintercept=0))+
+  scale_y_continuous(breaks=c(-60,-40,-20,0,20,40,60,80), labels=c(60,40,20,0,20,40,60,80),
+  #                   limits=c(-60,60)
+  )+
+  scale_x_continuous(breaks=c(0,1,2,3,4,5,6))+
+  geom_text(
+  size    = 5,
+  data    = dat_text2[c(1,3),],
+  mapping = aes(x = 5.5, y = -40, label = label)
+  )+
+    geom_text(
+  size    = 5,
+  data    = dat_text2[c(2,4),],
+  mapping = aes(x = 5.5, y = 80, label = label)
+  )+
+  labs(y="Microtubules (%)", x="Repaired damaged sites",title="Repaired damaged sites (complete or partial)")+
+  theme_classic(base_size = 20)
+
+### plots: not repaired
+tnrep<-holes_peaks %>% 
+  group_by(Case) %>%
+  mutate(totcase=n()) %>%
+  ungroup() %>%
+  group_by(Case,not_repaired_holes) %>%
+  summarize(count=n(), perc=round(count/totcase*100,2)) %>%
+  distinct()
+
+tnrep_2<-tnrep %>%
+  mutate(perc=ifelse(Case %in% c("DM1","NF1_DM1"),perc,-perc),
+         NF1=ifelse(Case %in% c("NF1","NF1_DM1"),"+NF1","Control"),
+         DM1=ifelse(Case %in% c("DM1","NF1_DM1"),"+DM1","-DM1"))
+
+dat_text2 <- data.frame(
+  label = paste(c("-DM1\n n=","+DM1\n n=","-DM1\n n=","+DM1\n n="),unique(holes_peaks %>% 
+  group_by(Case) %>%
+  summarize(totcase=n()) %>%.$totcase),sep=""),
+  NF1  = c('Control', 'Control', '+NF1','+NF1')
+) %>%
+  mutate(NF1=factor(NF1, levels=c("Control","+NF1")))
+
+tnrep_2 %>%
+  mutate(tot_f=factor(not_repaired_holes,levels=c(0,1,2,3,4,5,6))) %>% 
+  mutate(NF1=factor(NF1, levels=c("Control","+NF1"))) %>%
+  ggplot()+
+ geom_bar(aes(x=not_repaired_holes, y=perc,fill=DM1),#interaction(tot_f,DM1)),
+               stat="identity")+
+  scale_fill_manual(values=mycols_red[c(2,6)])+
+  facet_wrap(~NF1)+
+  #coord_flip()+
+  geom_hline(aes(yintercept=0))+
+  scale_y_continuous(breaks=c(-60,-40,-20,0,20,40,60,80), labels=c(60,40,20,0,20,40,60,80))+
+  scale_x_continuous(breaks=c(0,1,2,3,4,5,6))+
+  geom_text(
+  size    = 5,
+  data    = dat_text2[c(1,3),],
+  mapping = aes(x = 4.5, y = -30, label = label)
+  )+
+    geom_text(
+  size    = 5,
+  data    = dat_text2[c(2,4),],
+  mapping = aes(x = 4.5, y = 70, label = label)
+  )+
+  labs(y="Microtubules (%)", x="Not repaired damaged sites",title="Not repaired damaged sites")+
+  theme_classic(base_size = 20)
+
+### all together data
+permut_test_rep_two<-c(pvalue(oneway_test(repairs_oneby ~ as.factor(Case), data=holes_peaks %>% filter(Case %in% c("Control","DM1")))),
+               pvalue(oneway_test(repairs_oneby ~ as.factor(Case), data=holes_peaks %>% filter(Case %in% c("Control","NF1")))),
+               pvalue(oneway_test(repairs_oneby ~ as.factor(Case), data=holes_peaks %>% filter(Case %in% c("Control","NF1_DM1")))),
+               pvalue(oneway_test(repairs_oneby ~ as.factor(Case), data=holes_peaks %>% filter(Case %in% c("DM1","NF1_DM1")))),
+               pvalue(oneway_test(repairs_oneby ~ as.factor(Case), data=holes_peaks %>% filter(Case %in% c("NF1","NF1_DM1"))))
+)
+
+names(permut_test_rep_two)<-c("Control - DM1", "Control - NF1", "Control - NF1+DM1",
+                              "DM1 - NF1+DM1", "NF1 - NF1+DM1")
+kable(permut_test_rep_two, col.names = c("Comparison","pvalue"), 
+      caption="Permutation test, repaired damaged sites")
+
+permut_test_norep_two<-c(pvalue(oneway_test(not_repaired_holes ~ as.factor(Case), data=holes_peaks %>% filter(Case %in% c("Control","DM1")))),
+               pvalue(oneway_test(not_repaired_holes ~ as.factor(Case), data=holes_peaks %>% filter(Case %in% c("Control","NF1")))),
+               pvalue(oneway_test(not_repaired_holes ~ as.factor(Case), data=holes_peaks %>% filter(Case %in% c("Control","NF1_DM1")))),
+               pvalue(oneway_test(not_repaired_holes ~ as.factor(Case), data=holes_peaks %>% filter(Case %in% c("DM1","NF1_DM1")))),
+               pvalue(oneway_test(not_repaired_holes ~ as.factor(Case), data=holes_peaks %>% filter(Case %in% c("NF1","NF1_DM1"))))
+)
+
+names(permut_test_norep_two)<-c("Control - DM1", "Control - NF1", "Control - NF1+DM1",
+                              "DM1 - NF1+DM1", "NF1 - NF1+DM1")
+kable(permut_test_norep_two, col.names = c("Comparison","pvalue"), 
+      caption="Permutation test, not repaired damaged sites")
+
+holes_peaks %>% group_by(Case,perc_repaired_holes_fac) %>%
+  mutate(count=n()) %>%
+  ggplot() +
+  geom_bar(aes(x=Case,y=count,fill=perc_repaired_holes_fac),position="fill",stat="identity", width = 0.5)+
+  #facet_wrap(~Experiment)+
+  scale_fill_brewer(labels=paste(sort(unique(holes_peaks$perc_repaired_holes)),"%",sep=""))+
+  scale_y_continuous(labels=c("0","25","50","75","100"))+
+  scale_x_discrete(labels=c("Control","DM1","NF1","NF1+DM1"))+
+  labs(y="Microtubules (%)",fill="% repaired sites",title="Percentage of repaired damaged sites by condition")+
+  theme_classic(base_size=20)
+
+ggboxplot(holes_peaks, x = "Case", y = "frac_peaks_torepair",
+                color = "Case",palette="jco",
+                add = c("jitter"))+
+  stat_compare_means(comparisons = my_comparisons,method="t.test")+
+  stat_summary(fun.data = function(x) data.frame(y=-1, label = paste("Mean=",round(mean(x),2))),
+               geom="text")+
+  labs(y="Fraction", title="Fraction of repairing peaks")+
+  theme_classic2(base_size=20)+
+  theme(legend.position="none")
+
+```
+
+
+We tested also test the continuous signal of tubulin in the regions where there is a damage vs the regions without damages.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+meanTub_holes<-data_tub_final %>% group_by(Case,ID) %>%
+  filter(Hole_05=="Hole") %>%
+  summarize(meanTub=mean(RM_tub),
+            maxTub=max(RM_tub))%>%
+  mutate(Holes="Holes")
+
+### add meanTub for those without holes
+for (el in unique(data_tub_final$Case))
+{
+  dd<-data_tub_final %>% filter(Case==el)
+  
+  for (nel in unique(dd$ID))
+  {
+    #print(c(el,nel))
+    if (!(nel %in% meanTub_holes$ID[which(meanTub_holes$Case==el)]))
+    {
+      #print(1)
+      d1<-data.frame(Case=el,ID=nel,meanTub=0,maxTub=0,Holes="Holes")
+      meanTub_holes<-rbind(meanTub_holes,d1)
+    }
+  }
+}
+
+meanTub_total<-data_tub_final %>% group_by(Case,Hole_05) %>%
+  filter(!(Hole_05=="Tail")) %>%
+  summarize(meanTub=mean(RM_tub),
+            maxTub=max(RM_tub))
+
+meanTub_nonholes<-data_tub_final %>% group_by(Case,ID) %>%
+  filter(Hole_05=="Microtubule") %>%
+  summarize(meanTub=mean(RM_tub),
+            maxTub=max(RM_tub))%>%
+  mutate(Holes="Non Holes")
+
+meanTubHoles<-rbind(meanTub_holes,meanTub_nonholes)
+
+meanTubHoles$Holes<-factor(meanTubHoles$Holes, levels=c("Non Holes","Holes"),labels=c("Not Damage","Damage"))
+
+gp<-ggpaired(meanTubHoles %>% filter(Case=="Control") , x = "Holes", y = "meanTub", color = "Holes",
+              title="Average tubulin (not damaged VS damaged sites)",
+              #facet.by="Case",scale="free",
+              line.color = "gray", line.size = 0.4,
+              palette = "jco",
+              xlab="",ylab="Average Tubulin",
+          add=c("jitter")
+          ) +
+  stat_compare_means(method="wilcox.test",paired=TRUE,size=5)+
+  stat_summary(fun.data = function(x) data.frame(y=-100, label = paste("Mean=",round(mean(x),2))),
+               geom="text",size=5)+
+    theme_classic2(base_size=20)+
+  theme(legend.position="none")
+gp
+```
+
+#### Profile plot for microtubule and tubulin intensity
+
+Let's now print the profile of the selected microtubules (in purple, continuous line), with the regions that we consider damaged and the tubulin peaks (green continuous line). Additionally:
+
+- Grey vertical lines define the internal region of the microtubule, used for the analysis.
+
+- The dotted purple line is the threshold used to define damaged sites, we marked with an * damaged sites with length >0.5 micron.
+
+- The dotted green line is the threshold to identify tubulin peaks.
+
+Selection of microtubule to plot, as examples, from all the conditions : 
+- Control, MT16_2,  lev=30;
+- DM1: MT2_2, MT6_1 lev=10; 
+- NF1: MT1_2 lev=30;
+- NF1+DM1: MT26_1 lev=30; MT17_1 lev=40
+
+
+```{r echo=FALSE,message=FALSE,warning=FALSE}
+#order: Hole, Microtubule,Tail
+
+choose_case<-"DM1"
+choose_name<-c("MT6_1")
+#define a factor to show both tubulin and microtubule
+choose_lev<-10
+
+profile_plot(data_tub_final,choose_case,choose_name,choose_lev,tub_bycondition,dcn_fin_holes,save=FALSE)
+```
