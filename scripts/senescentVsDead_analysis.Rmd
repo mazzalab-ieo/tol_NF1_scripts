@@ -1,0 +1,125 @@
+---
+title: "SenescenzaVsApoptosis_v1"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+
+library(dplyr)
+library(tidyr)
+library(stringr)
+require(readxl)
+require(tidyverse)
+require(plotly)
+library(tibble)
+library(zoo)
+library(RColorBrewer)
+
+
+df_forPie <- function(df1, df2, cell_color) {
+  df_out <- merge(df1, df2, by = c("file_index.ch1", "frame"), all = TRUE)
+  names(df_out)[names(df_out) == "n().x"] <- "Tot"
+  names(df_out)[names(df_out) == "n().y"] <- "Color_cells"
+  df_out$Perc <- df_out$Color_cells/df_out$Tot*100
+  df_out$frame = as.numeric(as.character(df_out$frame))
+  df_out$Color <- cell_color
+  df_out[is.na(df_out)] <- 0
+  return(df_out)
+}
+
+path_my<-"~/FUCCI/data/Dead_analysis_data"
+filelist <- list.files(path=path_my)
+
+data <- data.frame()
+
+for (i in 1:length(filelist)) {
+  #setwd("X:/Documents/bachutti/Fucci/live_dead_analysis/Results/")
+  setwd("~/FUCCI/data/Dead_analysis_data")
+  datatemp <- read.delim(filelist[i], header = TRUE, sep = "\t", dec = ".")
+  datatemp$filename <- filelist[i]
+  
+  if (i==1) {
+    
+    datatemp <- separate(datatemp, Label, c("LabelString", "Roi", "Channel") , sep = ":")
+    datatemp <- separate(datatemp, LabelString, c("TL", "FileName", "framestring", "frame") , sep = "_")
+    datatemp <- add_column(datatemp, file_index = 0, .after = "FileName")
+    datatemp <- subset(datatemp, select = -c(TL, framestring))
+    datatemp$file_index = as.numeric(as.character(datatemp$file_index))
+    
+    ch1 <- subset(datatemp, Channel == 1)
+    ch2 <- subset(datatemp, Channel == 2)
+    ch3 <- subset(datatemp, Channel == 4)
+    
+    red_green <- merge(ch1, ch2, by = c("frame", "Roi"), suffixes = c(".ch1", ".ch2"))
+    datatemp2 <- merge(red_green, ch3, by = c("frame", "Roi"))
+    
+  } else {
+    
+    datatemp <- separate(datatemp, Label, c("LabelString", "Roi", "Channel") , sep = ":")
+    datatemp <- separate(datatemp, LabelString, c("TL", "FileName", "file_index", "company", "framestring", "frame"))
+    datatemp <- subset(datatemp, select = -c(TL, company, framestring))
+    datatemp$file_index = as.numeric(as.character(datatemp$file_index))
+    
+    ch1 <- subset(datatemp, Channel == 1)
+    ch2 <- subset(datatemp, Channel == 2)
+    ch3 <- subset(datatemp, Channel == 4)
+    
+    red_green <- merge(ch1, ch2, by = c("frame", "Roi"), suffixes = c(".ch1", ".ch2"))
+    datatemp2 <- merge(red_green, ch3, by = c("frame", "Roi"))
+  }
+  
+  data <- rbind(data, datatemp2)
+  
+}
+
+ 
+
+#----data grouping and parameters extraction
+
+stats_totCells <- data %>% group_by(file_index.ch1, frame) %>% summarize(n())
+stats_red_cells <- subset(data, Mean.ch1 >=50 & Mean.ch2 <=35 & Mean < 50) %>% group_by(file_index.ch1, frame) %>% summarize(n())
+stats_green_cells <- subset(data, Mean.ch2 >=35 & Mean.ch1 <=50 & Mean < 50) %>% group_by(file_index.ch1, frame) %>% summarize(n())
+stats_yellow_cells <- subset(data, Mean.ch2 >=35 & Mean.ch1 >= 50 & Mean < 50) %>% group_by(file_index.ch1, frame) %>% summarize(n())
+stats_dead_cells <- subset(data, Mean >=50) %>% group_by(file_index.ch1, frame) %>% summarize(n())
+stats_alive_cells <- subset(data, Mean < 50) %>% group_by(file_index.ch1, frame) %>% summarize(n())
+
+stats_red_tot <- df_forPie(stats_totCells, stats_red_cells, "Red")
+stats_green_tot <- df_forPie(stats_totCells, stats_green_cells, "Green")
+stats_yellow_tot <- df_forPie(stats_totCells, stats_yellow_cells, "Yellow")
+stats_dead_tot <- df_forPie(stats_totCells, stats_dead_cells, "Dead")
+stats_red_alive <- df_forPie(stats_alive_cells, stats_red_cells, "Red_over_alive")
+
+stats_tot <- rbind(stats_red_tot, stats_green_tot, stats_yellow_tot, stats_dead_tot, stats_red_alive)
+
+stats_tot$Condition[stats_tot$file_index.ch1 %in% c(0:8)] <- "BTWT_CTRL"
+stats_tot$Condition[stats_tot$file_index.ch1 %in% c(9:17)] <- "BTWT_T1"
+stats_tot$Condition[stats_tot$file_index.ch1 %in% c(18:26)] <- "BTWT_T2"
+stats_tot$Condition[stats_tot$file_index.ch1 %in% c(27:35)] <- "BTKO_CTRL"
+stats_tot$Condition[stats_tot$file_index.ch1 %in% c(36:44)] <- "BTKO_T1"
+stats_tot$Condition[stats_tot$file_index.ch1 %in% c(45:53)] <- "BTKO_T2"
+
+```
+
+
+```{r pressure, echo=FALSE}
+library(zoo)
+
+# data aggregation per well
+stats_aggregated <- stats_tot %>% group_by(frame, Color, Condition) %>% summarize(Sum_cells = sum(Tot), Sum_color = sum(Color_cells))
+
+stats_aggregated_mean <- stats_tot %>% group_by(frame, Color, Condition) %>% summarize(Mean_Percentage = mean(Perc))#, SE_Percentage = stderr(Perc))
+stats_aggregated$Percentage <- stats_aggregated$Sum_color/stats_aggregated$Sum_cells*100
+
+#mycol2<-brewer.pal(11,"RdBu")[c(8,9,10,4,3,2)]
+mycol2<-c(brewer.pal(5,"Blues")[c(2,3,4)],brewer.pal(5,"Greys")[c(2,3,4)])
+ggplot(subset(stats_aggregated, Color == "Dead"), aes(x = frame, y = Percentage, color = Condition)) + 
+  geom_line(size=1)+
+  scale_color_manual(values=mycol2,labels=c("KO, Vehicle","KO, T-DM1 0.1", "KO, T-DM1 1",
+                                            "WT, Vehicle","WT, T-DM1 0.1", "WT, T-DM1 1"))+
+  labs(x="Time (h)",y="Dead cells area (%)",color="")+
+  theme_classic(base_size=20)+
+  theme(legend.position = c(0.2,0.8))
+
+summary_dead<-stats_aggregated %>% 
+  filter(Color=="Dead")
+```
