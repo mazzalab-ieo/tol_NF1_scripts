@@ -1,6 +1,6 @@
 print_images_double<-function(data,print,save)
 {
-  #print the cell cycle intensity and story for a specific cell
+  # print the cell cycle intensity and story for a specific cell
   
   library(tidyverse)
   library(cowplot)
@@ -17,15 +17,6 @@ print_images_double<-function(data,print,save)
     labs(y="Intensity",x="",title=paste(data$Case[1], ", FOV=",strsplit(el,"_")[[1]][1], ", ID=",strsplit(el,"_")[[1]][2],sep=""))+
     theme_classic(base_size=20)
   
-  # pl2<-data %>% 
-  #   filter(Name==el) %>%
-  #   ggplot()+
-  #   geom_tile(aes(x=FRAME, y=0,fill=color))+
-  #   scale_fill_manual(values=mycol)+
-  #   guides(fill=FALSE)+
-  #   labs(y="",x="FRAME")+
-  #   theme_void()
-  
   pl3<-data %>%
     filter(Name==el) %>%
     ggplot()+
@@ -33,20 +24,21 @@ print_images_double<-function(data,print,save)
     scale_fill_manual(values=mycol)+#,labels=c("S","G1","G2/M","Lost","Dead"),drop = F)+
     labs(y="",x="FRAME",fill="")+
     theme_void(base_size=20)+
-    theme(legend.position = "bottom")
+    theme(legend.position = "bottom",strip.background = element_blank(),
+          legend.margin=margin(t=-10))
   
-  leg3<-get_legend(pl3)
-  pl3<-pl3+guides(fill=FALSE)
+  leg3<-get_plot_component(pl3, 'guide-box-bottom', return_all = TRUE)
   
-  #pleg<-plot_grid(NULL,leg3,ncol=1)
+  pl3<-pl3+theme(legend.position='none')
   
-  pltot<-plot_grid(pl1,#pl2,
-                   pl3,
-                   #pleg,
-                   rel_heights=c(0.95, 0.05),#0.05),
-                   ncol = 1, align = "v")
-  #print(pl3)
-  #dev.off()
+  pleg<-plot_grid(NULL,leg3,ncol=1)
+  
+  pltot<-plot_grid(plot_grid(pl1, pl3, ncol = 1, 
+                             rel_heights=c(0.95, 0.05),
+                             align = "v"),
+                   pleg, align="v",ncol=1,
+                   rel_heights=c(0.85,0.15))
+  
   
   if (print==TRUE)
     print(pltot)
