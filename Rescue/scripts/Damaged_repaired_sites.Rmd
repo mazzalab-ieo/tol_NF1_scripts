@@ -1,0 +1,402 @@
+---
+title: "Analysis of damaged sites and intatubular repair"
+date: "3/13/2024"
+output: html_document
+---
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+library(readxl)
+library(tidyverse)
+library(slider)
+library(RColorBrewer)
+library(cowplot)
+library(pracma)
+library(confintr)
+library(ggpubr)
+library(ggsci)
+library(knitr)
+library(strucchange)
+library(ggdist)
+library(coin)
+
+setwd("~/tol_NF1_scripts/Rescue")
+
+source("scripts/holes_length.R")
+source("scripts/opt_bpts.R")
+source("scripts/tips.R")
+source("scripts/peaks_definition.R")
+source("scripts/peaks_bymicron.R")
+source("scripts/profile_plot.R")
+```
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+## upload data
+# ctrl
+all_ctrl<- read_excel("~/tol_NF1_scripts/Rescue/data/sample_data.xlsx", sheet = "MT control ")
+colnames(all_ctrl)[1]<-"Microns"
+all_ctrl$Case<-"Control"
+
+# nf1
+all_NF1 <- read_excel("~/tol_NF1_scripts/Rescue/data/sample_data.xlsx", sheet = "MT + NF1")
+colnames(all_NF1)[1]<-"Microns"
+all_NF1$Case<-"NF1"
+
+#dm1
+all_DM1 <- read_excel("~/tol_NF1_scripts/Rescue/data/sample_data.xlsx", sheet = "MT + DM1")
+colnames(all_DM1)[1]<-"Microns"
+all_DM1$Case<-"DM1"
+
+# nf1+dm1
+all_NF1_DM1 <- read_excel("~/tol_NF1_scripts/Rescue/data/sample_data.xlsx", sheet = "MT + DM1 + NF1 ")
+colnames(all_NF1_DM1)[1]<-"Microns"
+all_NF1_DM1$Case<-"NF1_DM1"
+
+all_data<-rbind(all_ctrl,all_NF1,all_DM1,all_NF1_DM1)
+all_data$Experiment<-1
+
+all_data <- all_data %>%
+  mutate(ID=paste(Name,Experiment,sep="_"))
+```
+
+
+#### Preprocessing
+
+We computed the Normalized Intensity [0,100] on the signal intensity and then its Rolling Mean (RM) with a window=2, to stabilize the signal.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+#add rolling mean and normalized intensity
+window<-2
+
+mean_all<-all_data %>% 
+  group_by(Case,Name,Experiment) %>%
+  mutate(position=1:n()) %>%
+  mutate(Norm_int=(Microtubule-min(Microtubule))/(max(Microtubule)-min(Microtubule))*100,
+         RM_Norm=slide_dbl(Norm_int, mean, .before = window, .after = window),
+         RM_tub=slide_dbl(Tubulin, mean, .before = window, .after = window)) %>%
+  ungroup()
+```
+
+#### Tips and body identification
+
+We need to define the body of the microtubule, which can change from experiment to experiment. We can use the tubulin at the extremes of the microtubule: the first and last peak should identify the tips.
+
+For the analysis we considered only the signal coming from the body of the microtubule and considered only microtubules with body length >1.5 microns
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+#in this way we have the position of the peak, not the microns
+start_end_comp<-mean_all %>% 
+  group_by(Case,Name,Experiment) %>% 
+  group_modify(~ tips(.x,"RM_tub")) %>%
+  mutate(ID=paste(Name,Experiment,sep="_"))
+
+tips_identification<-left_join(start_end_comp,mean_all,by=c("Case","Name","Experiment","ID"))
+tips_identification_1 <- tips_identification %>% 
+  group_by(Case,Name,Experiment,ID) %>% 
+  summarize(start=start,
+            end=end,
+            start_c=Microns[start],
+            end_c=Microns[end],
+            ltot=end_c-start_c,
+            remove=ifelse(ltot<1.5,"Yes","No")) %>%
+  distinct()
+
+print("The following microtubules were removed due to signal length smaller than 2:")
+print(tips_identification_1 %>% filter(remove=="Yes") %>%
+        mutate(Mic=paste(Case,Name,Experiment,sep=":")) %>%
+        .$Mic)
+
+first_step_new_tips<-left_join(tips_identification_1,mean_all,by=c("Case","Name","Experiment","ID"))
+first_step_new_tips <- first_step_new_tips%>% 
+  filter(remove=="No") %>%
+  select(-remove)
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, fig.dim=c(14, 12)}
+final_data<- first_step_new_tips %>%
+  group_by(Case,Name,Experiment,ID) %>%
+  mutate(mean_RM=mean(RM_Norm[which(Microns>=start_c & Microns<=end_c)]),
+         stdev_RM=sd(RM_Norm[which(Microns>=start_c & Microns<=end_c)]),
+         Signal_RMmean=ifelse(RM_Norm>=mean_RM,1,0)
+         )
+```
+
+#### Holes identification with adaptive threshold
+
+Now we will identify "adaptive" mean of the microtubule normalized intensity. The analysis first identifies breakpoints (where there is a significant change in the trend), which divide the microtubule in segments. Then we compute a linear model on each segment and consider the coefficient of regression as representative of that segment. The maximum between that value and the mean along all the microtubule is our threshold to define holes, defined as intervals with intensity below the threshold.
+To avoid considering holes with a too high intensity, we set the maximum of the threshold to 70%.
+
+Our main holes will have a minimum length of 0.5 microns.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+pvalue<-numeric()
+opt_breaks<-numeric()
+breakpoints<-list()
+case<-character()
+name<-character()
+coeff_m0<-numeric()
+
+case_nr<-character()
+name_nr<-character()
+M0<-numeric()
+M1<-numeric()
+
+i<-0
+for (el in unique(final_data$Case))
+{
+  dd<-final_data %>% filter(Case==el)
+  for (nel in unique(dd$ID))
+  {
+    case<-c(case,el)
+    name<-c(name,nel)
+    
+    print(paste(el,"",nel))
+    
+    i<-i+1
+    prova<-dd %>% 
+      filter(ID==nel)
+    
+    ocus <- efp(prova$RM_Norm ~ 1, type = "OLS-CUSUM")
+    sc<-sctest(ocus)
+    pvalue<-c(pvalue,sc$p.value)
+    
+    bp <- breakpoints(prova$RM_Norm ~ 1)
+    breakpoints[[i]]<-bp$breakpoints
+    
+    bpts_sum <- summary(bp)
+    #quanti sono gli optimal break points?
+    opt_brks <- opt_bpts(bpts_sum$RSS["BIC",])
+
+    opt_breaks<-c(opt_breaks,min(opt_brks))
+    
+    #null model
+    fm0 <- lm(prova$RM_Norm ~ 1)
+    coeff_m0<-c(coeff_m0,coef(fm0))
+    
+    case_nr<-c(case_nr,rep(el,nrow(prova)))
+    name_nr<-c(name_nr,rep(nel,nrow(prova)))
+    
+    M0<-c(M0,rep(coef(fm0),nrow(prova)))
+          
+    if (!(is.na(min(opt_brks))))
+    {
+    k<-which.min(opt_brks)
+    ci <- confint(bp, breaks = opt_brks[k])
+    
+    # breakpoint model
+    fac <- breakfactor(bp, breaks = opt_brks[k])
+    fm1 <- lm(prova$RM_Norm ~ fac - 1)
+    
+    M1<-c(M1,fitted(fm1))
+    
+    op <- par(mfrow = c(1,1))
+    
+    ##OPTIONAL: print the breakpoints and trends
+    plot(prova$RM_Norm,
+         main=paste(prova$Case[1],prova$ID[1],sep=":"))
+    
+    lines(ts(fitted(fm0), start = 0), col = 3)
+    lines(ts(fitted(fm1), start = 0), col = 4)
+    abline(h=70, col="magenta",lty=2)
+    } else
+    {
+      M1<-c(M1,rep(NA,nrow(prova)))
+    }
+  }
+}
+
+breaks<-data.frame(Case=case, ID=name,pvalue=pvalue,opt_breaks=opt_breaks,coeff_null_model=coeff_m0)
+
+breaks<-left_join(breaks,final_data[,c("Case","ID","mean_RM")],by=c("Case","ID")) %>%
+  distinct(Case, ID, .keep_all = TRUE)
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+fitted_means<-data.frame(Case=case_nr,ID=name_nr,model_0=M0,steps=M1)
+
+data_moreMeans<-cbind(final_data,fitted_means[,c("model_0","steps")])
+
+data_moreMeans <- data_moreMeans %>% 
+  group_by(Case,ID,position) %>%
+  mutate(max_thr=max(mean_RM,steps,na.rm=TRUE),
+         Signal_adaptive=ifelse(RM_Norm>=max_thr,1,0),
+         adap_70=ifelse(max_thr<70,max_thr,70),
+         Signal_adaptive_70=ifelse(RM_Norm>=adap_70,1,0))
+
+#fix the signal for the elements out of the interval
+data_moreMeans <- data_moreMeans %>% 
+  mutate(Signal_adaptive=ifelse((Microns<start_c | Microns>end_c),2,Signal_adaptive),
+         Signal_adaptive_70=ifelse((Microns<start_c | Microns>end_c),2,Signal_adaptive_70))
+
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+## length of holes in the body
+data_check<-data_moreMeans %>% group_by(Case,ID) %>%
+  mutate(Name=ID) %>%
+     filter(Microns>=start_c & Microns<=end_c) %>%
+     ungroup()
+
+holes<-holes_length(data_check,"Signal_adaptive_70",0.2,0.5)
+
+dcn_fin_holes<-holes[[1]]
+dcn_fin_holes$ID<-dcn_fin_holes$Name
+dcn_fin_holes<-left_join(dcn_fin_holes,start_end_comp[c("Case","ID","Experiment")], by=c("Case","ID"))
+
+dcn_final_try<-holes[[2]]
+dcn_final<-left_join(dcn_final_try,start_end_comp[c("Case","ID","start")],by=c("Case","Name"="ID"))
+dcn_final<-dcn_final %>% 
+  mutate(position=position+start-1,
+                                ID=Name) %>%
+  select(!c(start,Name))
+
+final_data<-left_join(data_moreMeans,dcn_final[,-1],by=c("Case","ID","position"))
+
+final_data <-final_data %>% 
+  mutate(Hole_general=ifelse(Signal_adaptive_70==2,"Tail",
+                             ifelse(Hole_general=="Yes","Hole","Microtubule")),
+         Hole_05=ifelse(Signal_adaptive_70==2,"Tail",
+                        ifelse(Hole_05=="Yes","Hole","Microtubule")))
+```
+
+#### Identification of tubulin repair
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, fig.dim= c(12, 10)}
+data_tub<-final_data %>% group_by(Case,ID) %>% 
+  mutate(RM_tub=slide_dbl(Tubulin, mean, .before = window, .after = window),
+         NI_tub=(Tubulin-min(Tubulin))/(max(Tubulin)-min(Tubulin))*100) %>%
+  ungroup()
+```
+
+WARNING: This part needs to be run on the complete dataset available, since the level of tubulin depends on the condition and on the experiment.
+
+We first identify quantiles of tubulin in the microtubule body for each condition and experiment
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, fig.dim= c(12, 10)}
+# tub_bycondition<-data_tub %>% group_by(Case,Experiment) %>%
+#   filter(Microns>=start_c & Microns<=end_c) %>%
+#   summarize(mean_RMtub_condition=mean(RM_tub),
+#             sd_RMtub_condition=sd(RM_tub),
+#     q25_RMtub_condition=quantile(RM_tub,0.25),
+#     q50_RMtub_condition=quantile(RM_tub,0.5),
+#     q75_RMtub_condition=quantile(RM_tub,0.75),
+#     q90_RMtub_condition=quantile(RM_tub,0.9),
+#     iqr=IQR(RM_tub),
+#     tmax=q75_RMtub_condition+1.5*iqr)
+# 
+# kable(tub_bycondition)
+```
+
+#### Identification of tubulin signal on the tips 
+
+WARNING: This part needs to be run on the complete dataset available, since the level of tubulin depends on the condition and on the experiment.
+
+We want to identify a threshold for the background tubulin on the Control case, to remove peaks with higher intensity.
+For each microtubule in the Control, we will find the maximum value on the tips and then compute a distribution. This should describe, in terms of tubulin, the total intensity of the microtubule, and then we can infer a background threshold as 25% of the median value.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, fig.dim= c(12, 10)}
+
+# max_tub_tips<-data_tub %>% 
+#   filter(Case=="Control") %>% group_by(Experiment,ID) %>%
+#   filter(Microns<start_c || Microns>end_c) %>%
+#   summarize(max=max(RM_tub))
+# 
+# ##GROUP BY EXPERIMENT
+# thr_peaks<-max_tub_tips %>% 
+#   group_by(Experiment) %>%
+#   summarize(med=median(max),thr1=med*0.25,
+#   thr2=med*0.2)
+```
+
+#### Peaks in tubulin intensity
+
+WARNING: to run this part, upload the tub_by_condition.txt file, which contains the thresholds obtained for the complete dataset
+
+We take the 75th percentile of the tubulin intensity (Rolling Mean with window=2) as minimum height to define peaks (R function findpeaks). To find the peaks we consider a pattern where there are at least 4 increasing and 4 decreasing points.
+We then remove peaks with height lower than the threshold defined above, to avoid background fluctuations.
+
+We also reduce the width of the peaks by considering the part of the peak lying over the 50th percentile. In this way we can consider only the significant contribution of the tubulin.
+
+```{r echo=FALSE}
+tub_bycondition <- read_excel("~/tol_NF1_scripts/Rescue/data/tub_bycondition.xlsx")
+thr_peaks <- read_excel("~/tol_NF1_scripts/Rescue/data/thr_peaks.xlsx")
+
+peaks_1<-peaks_definition(data_tub,tub_bycondition,4,"q75_RMtub_condition")
+
+peaks_75<-left_join(peaks_1,thr_peaks,by="Experiment")
+  
+peaks_75<-peaks_75 %>% 
+  filter(Height_peak>=thr2)
+
+peaks_75<-left_join(peaks_75,tub_bycondition,by=c("Case","Experiment"))
+
+peaks_bymic_75<-peaks_bymicron(data_tub,peaks_75,tub_bycondition,"q50_RMtub_condition")
+```
+
+Let's also check for peaks that goes above the 50th percentile, to check if we find something else when NF1 is added. For those peaks the width taken on the 25th percentile.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+peaks_2<-peaks_definition(data_tub,tub_bycondition,4,"q50_RMtub_condition")
+
+peaks_50<-left_join(peaks_2,thr_peaks,by="Experiment")
+  
+peaks_50<-peaks_50 %>% 
+  filter(Height_peak>=thr2)
+
+peaks_50<-left_join(peaks_50,tub_bycondition,by=c("Case","Experiment"))
+
+extra<-anti_join(peaks_50,peaks_75)
+
+peaks_bymic_50<-peaks_bymicron(data_tub,extra,tub_bycondition,"q25_RMtub_condition")
+colnames(peaks_bymic_50)[4]<-"Is_peak_50"
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+peaks_bymic_try<-full_join(peaks_bymic_75,peaks_bymic_50, by=c("Case","ID","position"))
+
+peaks_bymic <- peaks_bymic_try %>%
+  group_by(Case,ID,position) %>% 
+  mutate(Is_peak=max(Is_peak,Is_peak_50,na.rm=TRUE)) %>%
+  select(-Is_peak_50)
+
+data_tub_final<-left_join(data_tub,peaks_bymic)
+
+data_tub_final <- data_tub_final %>% 
+  mutate(Internal_peak=ifelse((Is_peak==0| is.na(Is_peak)),"No","Yes")) %>%
+  mutate(Internal_peak=ifelse(Hole_05=="Tail","Tail",Internal_peak))
+
+## check also quantity of repair
+data_tub_final <- data_tub_final %>% 
+  mutate(Filled=ifelse((Hole_05=="Hole" & Internal_peak=="Yes"),"Repaired",
+                              ifelse((Hole_05=="Hole" & Internal_peak=="No"),"Unrepaired",
+                                     Hole_05)))
+
+data_tub_final$Filled<-factor(data_tub_final$Filled, levels=c("Tail","Microtubule","Unrepaired","Repaired"))
+```
+
+#### Profile plot for microtubule and tubulin intensity
+
+Let's now print the profile of the selected microtubules (in purple, continuous line), with the regions that we consider damaged and the tubulin peaks (green continuous line). Additionally:
+
+- Grey vertical lines define the internal region of the microtubule, used for the analysis.
+
+- The dotted purple line is the threshold used to define damaged sites, we marked with an * damaged sites with length >0.5 micron.
+
+- The dotted green line is the threshold to identify tubulin peaks.
+
+Selection of microtubule to plot, as examples, from all the conditions : 
+- Control, MT16_2,  lev=30;
+- DM1: MT2_2, MT6_1 lev=10; 
+- NF1: MT1_2 lev=30;
+- NF1+DM1: MT26_1 lev=30; MT17_1 lev=40
+
+
+```{r echo=FALSE,message=FALSE,warning=FALSE}
+#order: Hole, Microtubule,Tail
+
+choose_case<-"Control"
+choose_name<-c("MT16_1")
+#define a factor to show both tubulin and microtubule
+choose_lev<-30
+
+profile_plot(data_tub_final,choose_case,choose_name,choose_lev,tub_bycondition,dcn_fin_holes,save=FALSE)
+```
