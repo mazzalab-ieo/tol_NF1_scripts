@@ -1,0 +1,335 @@
+---
+title: "Fig 1A, 1B, Sup. Fig. 1A, Sup. Fig. 1B"
+author: "Emanuele Bonetti"
+date: '2023-01-11'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+suppressPackageStartupMessages(library(tidyverse))
+suppressPackageStartupMessages(library(ggrepel))
+
+```
+
+# Fig 1A, Sup. Fig. 1A
+## OR gene comparison
+### ALL BC primary vs metastatic (TCGA vs GENIE v13) Sup Fig 1A
+
+```{r}
+#pick data from TCGA and GENIE
+TCGA <- read.delim("fig1a_supFig1a_data/TCGA_Mutated_Genes_BC.txt", check.names = F)
+TCGA <- TCGA[,c("Gene", "#", "Profiled Samples")]
+TCGA <- mutate(.data = TCGA, neg = `Profiled Samples` - `#`)
+TCGA$`Profiled Samples` <- NULL
+colnames(TCGA)[2] <- "pos"
+GENIE <- read.delim("fig1a_supFig1a_data/Mutated_Genes_GENIE_NF1PANELS_metastatic.txt", check.names = F)
+GENIE <- GENIE[,c("Gene", "#", "Profiled Samples")]
+GENIE <- mutate(.data = GENIE, neg = `Profiled Samples` - `#`)
+GENIE$`Profiled Samples` <- NULL
+colnames(GENIE)[2] <- "pos"
+
+#restrict to genes included in GENIE
+GENIEgenes <- as.vector(GENIE[,1])
+TCGA <- subset(TCGA, Gene %in% GENIEgenes) 
+TCGAgenes <- as.vector(TCGA[,1])
+GENIE <- subset(GENIE, Gene %in% TCGAgenes)
+#sort by gene to align values
+oTCGA <- TCGA[order(TCGA$Gene),]
+oGENIE <- GENIE[order(GENIE$Gene),]
+#create unique data frame
+M1vsM0 <- cbind (oTCGA[,2:3], oGENIE[,2:3])
+row.names(M1vsM0) <- oTCGA[,1]
+colnames(M1vsM0) <- c("TCGAp", "TCGAn", "Mutated Samples", "GENIEn")
+
+#chisquare loop
+fisher.pval <- sapply(seq_len(nrow(M1vsM0)), function(row) {
+  fisher.test(matrix(as.numeric(M1vsM0[row,]), nrow=2, 2,2), or = 1)$p.value
+})
+M1vsM0$fisher.pval <- fisher.pval
+
+M1vsM0 <- mutate(.data = M1vsM0, toFDR = if_else((TCGAp + `Mutated Samples`) > (TCGAn + TCGAp + GENIEn + `Mutated Samples`)*0.05, "FDR", "noFDR"))
+M1vsM0_FDR <- filter(.data = M1vsM0, toFDR == "FDR")
+
+M1vsM0_FDR$FDR <- p.adjust(M1vsM0_FDR$fisher.pval, method="BH")
+M1vsM0 <- left_join(M1vsM0 %>% mutate(Symbol = rownames(M1vsM0)), 
+          M1vsM0_FDR %>% mutate(Symbol = rownames(M1vsM0_FDR)),
+          by = "Symbol", 
+          suffix = c("",".toDel")
+)
+
+M1vsM0 <- M1vsM0[,!str_detect(colnames(M1vsM0), "toDel")] %>% mutate(`FDR bin` = if_else(condition = FDR <= 0.25, true = "FDR ≤ 0.25", false = "FDR > 0.25"))
+row.names(M1vsM0) <- M1vsM0$Symbol
+
+#OddsRatio
+OddsRatio <- rep(0, times= (nrow(M1vsM0)))
+for(i in seq_len(nrow(M1vsM0))) {  
+  OddsRatio[i] <- ((M1vsM0[i,3])/(M1vsM0[i,4])) / ((M1vsM0[i,1])/(M1vsM0[i,2]))
+}
+
+M1vsM0_OR <- data.frame(M1vsM0,OddsRatio, check.names = F)
+
+M1vsM0_OR$`-Log(pValue)` <- -log10(M1vsM0_OR$fisher.pval)
+M1vsM0_OR$Gene <- rownames(M1vsM0_OR)
+
+M1vsM0_OR <- mutate(M1vsM0_OR, `Mutated Samples <5%` = if_else(row.names(M1vsM0_OR) %in% row.names(M1vsM0_FDR), "no", "yes"))
+M1vsM0_OR[is.na(M1vsM0_OR$`FDR bin`), "FDR bin"] = "FDR > 0.25"
+
+
+g <- ggplot(data=M1vsM0_OR, aes(x=OddsRatio, y=`-Log(pValue)`, size=`Mutated Samples`, color=`FDR bin`)) +
+  scale_colour_manual(values = c("#D3D3D3", "#36454F", "#D3D3D3")) +
+  geom_jitter(show.legend = T) +
+  geom_text_repel(data=subset(M1vsM0_OR, `FDR bin` == "FDR ≤ 0.25"), aes(label=Gene), size=3 , box.padding = 0.4, show.legend = FALSE) +
+  geom_text_repel(data=subset(M1vsM0_OR, Symbol == "NF1"), aes(label=Gene), size=3 , box.padding = 5, show.legend = FALSE) +
+  geom_hline(yintercept = 1.301030103, color = "red", linetype = "dashed") +
+  theme_bw()
+grDevices::cairo_pdf("plot/sup_fig1a.pdf", width = 8, height = 6)
+g
+dev.off()
+```
+
+### ALL BC primary vs metastatic (TCGA vs GENIE v13) ERBB2+
+
+```{r}
+#pick data from TCGA and GENIE ERBB2+breast only
+TCGA <- read.delim("fig1a_supFig1a_data/TCGA_Mutated_Genes_BC_ERBB2AMP.txt", check.names = F)
+TCGA <- TCGA[,c("Gene", "#", "Profiled Samples")]
+TCGA <- mutate(.data = TCGA, neg = `Profiled Samples` - `#`)
+TCGA$`Profiled Samples` <- NULL
+colnames(TCGA)[2] <- "pos"
+GENIE <- read.delim("fig1a_supFig1a_data/Mutated_Genes_GENIE_NF1PANELS_metastatic_erbb2AMP.txt", check.names = F)
+GENIE <- GENIE[,c("Gene", "#", "Profiled Samples")]
+GENIE <- mutate(.data = GENIE, neg = `Profiled Samples` - `#`)
+GENIE$`Profiled Samples` <- NULL
+colnames(GENIE)[2] <- "pos"
+
+#restrict to genes included in GENIE
+GENIEgenes <- as.vector(GENIE[,1])
+TCGA <- subset(TCGA, Gene %in% GENIEgenes)
+TCGAgenes <- as.vector(TCGA[,1])
+GENIE <- subset(GENIE, Gene %in% TCGAgenes)
+#sort by gene to align values
+oTCGA <- TCGA[order(TCGA$Gene),]
+oGENIE <- GENIE[order(GENIE$Gene),]
+#create unique data frame
+M1vsM0 <- cbind (oTCGA[,2:3], oGENIE[,2:3])
+row.names(M1vsM0) <- oTCGA[,1]
+colnames(M1vsM0) <- c("TCGAp", "TCGAn", "Mutated Samples", "GENIEn")
+
+#chisquare loop
+fisher.pval <- sapply(seq_len(nrow(M1vsM0)), function(row) {
+  fisher.test(matrix(as.numeric(M1vsM0[row,]), nrow=2, 2,2), or = 1)$p.value
+})
+M1vsM0$fisher.pval <- fisher.pval
+
+M1vsM0 <- mutate(.data = M1vsM0, toFDR = if_else((TCGAp + `Mutated Samples`) > (TCGAn + TCGAp + GENIEn + `Mutated Samples`)*0.05, "FDR", "noFDR"))
+M1vsM0_FDR <- filter(.data = M1vsM0, toFDR == "FDR")
+
+M1vsM0_FDR$FDR <- p.adjust(M1vsM0_FDR$fisher.pval, method="BH")
+M1vsM0 <- left_join(M1vsM0 %>% mutate(Symbol = rownames(M1vsM0)), 
+          M1vsM0_FDR %>% mutate(Symbol = rownames(M1vsM0_FDR)),
+          by = "Symbol", 
+          suffix = c("",".toDel")
+)
+
+M1vsM0 <- M1vsM0[,!str_detect(colnames(M1vsM0), "toDel")] %>% mutate(`FDR bin` = if_else(condition = FDR <= 0.25, true = "FDR ≤ 0.25", false = "FDR > 0.25"))
+row.names(M1vsM0) <- M1vsM0$Symbol
+
+#OddsRatio
+OddsRatio <- rep(0, times= (nrow(M1vsM0)))
+for(i in seq_len(nrow(M1vsM0))) {  
+  OddsRatio[i] <- ((M1vsM0[i,3])/(M1vsM0[i,4])) / ((M1vsM0[i,1])/(M1vsM0[i,2]))
+}
+
+M1vsM0_OR <- data.frame(M1vsM0,OddsRatio, check.names = F)
+
+M1vsM0_OR$`-Log(pValue)` <- -log10(M1vsM0_OR$fisher.pval)
+M1vsM0_OR$Gene <- rownames(M1vsM0_OR)
+
+M1vsM0_OR <- mutate(M1vsM0_OR, `Mutated Samples <5%` = if_else(row.names(M1vsM0_OR) %in% row.names(M1vsM0_FDR), "no", "yes"))
+M1vsM0_OR[is.na(M1vsM0_OR$`FDR bin`), "FDR bin"] = "FDR > 0.25"
+
+
+g <- ggplot(data=M1vsM0_OR, aes(x=OddsRatio, y=`-Log(pValue)`, size=`Mutated Samples`, color=`FDR bin`)) +
+  scale_colour_manual(values = c("#D3D3D3", "#36454F", "#D3D3D3")) +
+  geom_jitter(show.legend = T) +
+  geom_text(data=subset(M1vsM0_OR, `FDR bin` == "FDR ≤ 0.25"), aes(label=Gene), size=3, show.legend = FALSE, nudge_x = 0.17, nudge_y = 0.1) +
+  geom_hline(yintercept = 1.301030103, color = "red", linetype = "dashed") +
+  theme_bw()
+grDevices::cairo_pdf("plot/fig1a.pdf", width = 8, height = 6)
+g
+dev.off()
+```
+
+# Fig 1B, Sup. Fig 1B
+## Data loading
+
+```{r}
+clinical_data_patient <- read.delim("v13/data_clinical_patient.txt" , comment.char = "#")
+clinical_data_sample <- read.delim("v13/data_clinical_sample.txt" , comment.char = "#")
+
+clinical_patients_samples_ids_relation <- clinical_data_sample[,c("PATIENT_ID","SAMPLE_ID")]
+
+mutational_data <- data.table::fread("v13/data_mutations_extended.txt")
+```
+
+## Data processing
+## NF1 mutations
+
+```{r}
+mutational_data <- mutational_data %>% filter(Hugo_Symbol == "NF1")
+```
+
+## Breast Cancer mutation type (primary/metastatic) filtering
+
+```{r}
+# breast primary
+clinical_data_sample_breast_primary <- clinical_data_sample %>% filter(CANCER_TYPE == "Breast Cancer" & SAMPLE_TYPE == "Primary")
+mutational_data_breast_primary <- mutational_data %>% filter(Tumor_Sample_Barcode %in% clinical_data_sample_breast_primary$SAMPLE_ID) 
+
+# breast metastatic
+clinical_data_sample_breast_metastatic <- clinical_data_sample %>% filter(CANCER_TYPE == "Breast Cancer" & SAMPLE_TYPE == "Metastasis")
+mutational_data_breast_metastatic <- mutational_data %>% filter(Tumor_Sample_Barcode %in% clinical_data_sample_breast_metastatic$SAMPLE_ID)
+```
+
+## Data manipulation for **ProteinPaint**
+
+```{r}
+#primary
+
+mutational_data_breast_primary <- mutational_data_breast_primary[,c("Hugo_Symbol", "RefSeq", "Chromosome", "Start_Position", "HGVSp_Short", "Variant_Classification")]
+
+mutational_data_breast_primary$Variant_Classification <- as.factor(mutational_data_breast_primary$Variant_Classification)
+levels(mutational_data_breast_primary$Variant_Classification) <- c(
+  "Frame_Shift_Del" = "frameshift",
+  "Frame_Shift_Ins" = "frameshift",
+  "In_Frame_Del" = "proteinDel",
+  "Intron" = "intron",
+  "Missense_Mutation" = "missense",
+  "Nonsense_Mutation" = "nonsense",
+  "Splice_Region" = "splice_region",
+  "Splice_Site" = "splice"
+)
+
+colnames(mutational_data_breast_primary) <- c("gene", "refseq", "chromosome", "start", "aachange", "class")
+
+mutational_data_breast_primary$refseq <- "NM_001042492"
+
+write.table(mutational_data_breast_primary, 
+            "v13/Primary (318\\8526, 4.1%) .txt", 
+            col.names = T, 
+            row.names = F, 
+            quote = F,
+            sep = "\t",
+            eol = "\n") 
+
+
+# metastatic
+
+mutational_data_breast_metastatic <- mutational_data_breast_metastatic[,c("Hugo_Symbol", "RefSeq", "Chromosome", "Start_Position", "HGVSp_Short", "Variant_Classification")]
+
+mutational_data_breast_metastatic$Variant_Classification <- as.factor(mutational_data_breast_metastatic$Variant_Classification)
+levels(mutational_data_breast_metastatic$Variant_Classification) <- c(
+  "Frame_Shift_Del" = "frameshift",
+  "Frame_Shift_Ins" = "frameshift",
+  "In_Frame_Del" = "proteinDel",
+  "In_Frame_Ins" = "proteinIns",
+  "Intron" = "intron",
+  "Missense_Mutation" = "missense",
+  "Nonsense_Mutation" = "nonsense",
+  "Splice_Region" = "splice_region",
+  "Splice_Site" = "splice"
+)
+
+colnames(mutational_data_breast_metastatic) <- c("gene", "refseq", "chromosome", "start", "aachange", "class")
+
+mutational_data_breast_metastatic$refseq <- "NM_001042492"
+
+write.table(mutational_data_breast_metastatic, 
+            "v13/Metastatic (386\\6731, 6.3%) .txt", 
+            col.names = T, 
+            row.names = F, 
+            quote = F,
+            sep = "\t",
+            eol = "\n") 
+
+
+```
+
+## ERBB2 amp
+
+```{r}
+CNA <- data.table::fread("v13/data_CNA.txt")
+CNA <- CNA %>% filter(Hugo_Symbol == "ERBB2")
+
+ERBB2_ids <- colnames(CNA)
+ERBB2_ids <- ERBB2_ids[2:length(ERBB2_ids)]
+
+CNA <- as.data.frame(t(CNA))
+colnames(CNA) <- "ERBB2"
+CNA <- CNA[2:nrow(CNA),]
+CNA <- as.factor(CNA)
+names(CNA) <- ERBB2_ids
+# ERBB2 AMP
+ERBB2_amp_ids <- names(CNA[CNA == "2"])
+
+mutational_data_breast_primary_ERBB2_amp <- mutational_data %>% filter(
+  Tumor_Sample_Barcode %in% ERBB2_amp_ids & 
+    Tumor_Sample_Barcode %in% clinical_data_sample_breast_primary$SAMPLE_ID)
+
+mutational_data_breast_metastatic_ERBB2_amp <- mutational_data %>% filter(
+  Tumor_Sample_Barcode %in% ERBB2_amp_ids & 
+    Tumor_Sample_Barcode %in% clinical_data_sample_breast_metastatic$SAMPLE_ID)
+
+mutational_data_breast_primary_ERBB2_amp <- mutational_data_breast_primary_ERBB2_amp[,c("Hugo_Symbol", "RefSeq", "Chromosome", "Start_Position", "HGVSp_Short", "Variant_Classification")]
+
+mutational_data_breast_metastatic_ERBB2_amp <- mutational_data_breast_metastatic_ERBB2_amp[,c("Hugo_Symbol", "RefSeq", "Chromosome", "Start_Position", "HGVSp_Short", "Variant_Classification")]
+
+mutational_data_breast_primary_ERBB2_amp$Variant_Classification <- as.factor(mutational_data_breast_primary_ERBB2_amp$Variant_Classification)
+levels(mutational_data_breast_primary_ERBB2_amp$Variant_Classification) <- c(
+  "Frame_Shift_Del" = "frameshift",
+  "Frame_Shift_Ins" = "frameshift",
+  "In_Frame_Del" = "proteinDel",
+  "Intron" = "intron",
+  "Missense_Mutation" = "missense",
+  "Nonsense_Mutation" = "nonsense",
+  "Splice_Region" = "splice_region",
+  "Splice_Site" = "splice"
+)
+
+mutational_data_breast_metastatic_ERBB2_amp$Variant_Classification <- as.factor(mutational_data_breast_metastatic_ERBB2_amp$Variant_Classification)
+levels(mutational_data_breast_metastatic_ERBB2_amp$Variant_Classification) <- c(
+  "Frame_Shift_Del" = "frameshift",
+  "Frame_Shift_Ins" = "frameshift",
+  "In_Frame_Del" = "proteinDel",
+  "Intron" = "intron",
+  "Missense_Mutation" = "missense",
+  "Nonsense_Mutation" = "nonsense",
+  "Splice_Region" = "splice_region",
+  "Splice_Site" = "splice"
+)
+
+colnames(mutational_data_breast_primary_ERBB2_amp) <- c("gene", "refseq", "chromosome", "start", "aachange", "class")
+colnames(mutational_data_breast_metastatic_ERBB2_amp) <- c("gene", "refseq", "chromosome", "start", "aachange", "class")
+
+mutational_data_breast_primary_ERBB2_amp$refseq <- "NM_001042492"
+mutational_data_breast_metastatic_ERBB2_amp$refseq <- "NM_001042492"
+
+write.table(mutational_data_breast_primary_ERBB2_amp, 
+            "v13/Primary (40\\929, 4.3%) (ERBB2).txt", 
+            col.names = T, 
+            row.names = F, 
+            quote = F,
+            sep = "\t",
+            eol = "\n") 
+
+write.table(mutational_data_breast_metastatic_ERBB2_amp, 
+            "v13/Metastatic (46\\676, 6.8%) (ERBB2).txt", 
+            col.names = T, 
+            row.names = F, 
+            quote = F,
+            sep = "\t",
+            eol = "\n") 
+```
+
