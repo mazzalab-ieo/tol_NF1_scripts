@@ -166,12 +166,12 @@ dev.off()
 ## Data loading
 
 ```{r}
-clinical_data_patient <- read.delim("v13/data_clinical_patient.txt" , comment.char = "#")
-clinical_data_sample <- read.delim("v13/data_clinical_sample.txt" , comment.char = "#")
+clinical_data_patient <- read.delim("fig1b_supFig1b_data/data_clinical_patient.txt" , comment.char = "#")
+clinical_data_sample <- read.delim("fig1b_supFig1b_data/data_clinical_sample.txt" , comment.char = "#")
 
 clinical_patients_samples_ids_relation <- clinical_data_sample[,c("PATIENT_ID","SAMPLE_ID")]
 
-mutational_data <- data.table::fread("v13/data_mutations_extended.txt")
+mutational_data <- data.table::fread("fig1b_supFig1b_data/data_mutations_extended.txt")
 ```
 
 ## Data processing
@@ -217,7 +217,7 @@ colnames(mutational_data_breast_primary) <- c("gene", "refseq", "chromosome", "s
 mutational_data_breast_primary$refseq <- "NM_001042492"
 
 write.table(mutational_data_breast_primary, 
-            "v13/Primary (318\\8526, 4.1%) .txt", 
+            "fig1b_supFig1b_data/Primary (318\\8526, 4.1%) .txt", 
             col.names = T, 
             row.names = F, 
             quote = F,
@@ -247,7 +247,7 @@ colnames(mutational_data_breast_metastatic) <- c("gene", "refseq", "chromosome",
 mutational_data_breast_metastatic$refseq <- "NM_001042492"
 
 write.table(mutational_data_breast_metastatic, 
-            "v13/Metastatic (386\\6731, 6.3%) .txt", 
+            "fig1b_supFig1b_data/Metastatic (386\\6731, 6.3%) .txt", 
             col.names = T, 
             row.names = F, 
             quote = F,
@@ -260,7 +260,7 @@ write.table(mutational_data_breast_metastatic,
 ## ERBB2 amp
 
 ```{r}
-CNA <- data.table::fread("v13/data_CNA.txt")
+CNA <- data.table::fread("fig1b_supFig1b_data/data_CNA.txt")
 CNA <- CNA %>% filter(Hugo_Symbol == "ERBB2")
 
 ERBB2_ids <- colnames(CNA)
@@ -317,7 +317,7 @@ mutational_data_breast_primary_ERBB2_amp$refseq <- "NM_001042492"
 mutational_data_breast_metastatic_ERBB2_amp$refseq <- "NM_001042492"
 
 write.table(mutational_data_breast_primary_ERBB2_amp, 
-            "v13/Primary (40\\929, 4.3%) (ERBB2).txt", 
+            "fig1b_supFig1b_data/Primary (40\\929, 4.3%) (ERBB2).txt", 
             col.names = T, 
             row.names = F, 
             quote = F,
@@ -325,7 +325,7 @@ write.table(mutational_data_breast_primary_ERBB2_amp,
             eol = "\n") 
 
 write.table(mutational_data_breast_metastatic_ERBB2_amp, 
-            "v13/Metastatic (46\\676, 6.8%) (ERBB2).txt", 
+            "fig1b_supFig1b_data/Metastatic (46\\676, 6.8%) (ERBB2).txt", 
             col.names = T, 
             row.names = F, 
             quote = F,
