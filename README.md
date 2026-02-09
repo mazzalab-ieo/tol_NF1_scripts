@@ -5,7 +5,7 @@ In particular:
 
 - FUCCI: scripts and data to perform cell cycle phase analysis
 - Rescue: scripts, data and a htlml file to identify damaged sites on microtubules and regions of tubulin repair
-- Figures_data_and_code: scripts and data to replicate figures 1A,B 4A,B,K and supplementary figures 1A,B
+- Figures_data_and_code: scripts and data to replicate figures 1A,B 4A,B,K and supplementary figures 1A,B 3A
 
 ### System requirements
 
