@@ -1,0 +1,84 @@
+---
+title: "Aneuploidy score"
+author: "Emanuele Bonetti"
+date: '2022-12-29'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+#library(AneuploidyScore)
+library(GenomicRanges)
+library(ggplot2)
+library(reshape2)
+library(ggpubr)
+library(tidyverse)
+library(RColorBrewer)
+'%!in%' <- function(x,y)!('%in%'(x,y))
+```
+
+## Function SetUp
+
+```{r}
+AS_function = function(data) {
+data("ucsc.hg19.cytoband")
+cytoarm <- cytobandToArm(ucsc.hg19.cytoband)
+tcn_col <- 'TCN'
+wgd_ploidy <- checkIfWGD(data, tcn_col = tcn_col, threshold = 0.5,
+                         wgd_gf = 0.5, ploidy_method = 'wmean')
+threshold <- 0.5
+data_caa = getCAA(data, cytoarm, tcn_col=tcn_col, classifyCN=TRUE,
+              ploidy=wgd_ploidy['ploidy'], threshold=threshold)
+caa = reduceArms(data_caa, caa_method=c('arm', 'seg'),
+                  arm_ids = c('p', 'q'))
+AS <- colSums(abs(caa), na.rm = TRUE)
+return(AS)
+}
+```
+
+## AS ascets
+
+```{r}
+source("ascets-master/ascets_resources.R")
+seg_input=read.delim("genie_public_segments_all.seg",header=T,as.is=T)
+cna <- seg_input
+colnames(cna) <- c("sample", "chrom", "segment_start", "segment_end", "num_mark", "log2ratio")
+ascets_output <- ascets(cna = cna, cytoband = read.delim("ascets-master/cytoband_coordinates_hg19.txt"), min_boc = 0.5, name = "out_all" , alteration_threshold = 0.7)
+
+AS_ascets <- ascets_output$aneu_scores$aneuploidy_score
+AS_ascets <- as.data.frame(AS_ascets)
+colnames(AS_ascets) <- "AS"
+AS_ascets$Genotype <- "NF1 wt"
+
+seg_nf1 = read.delim("genie_public_segments_nf1Mutated.seg",header=T,as.is=T) 
+cna_nf1 <- seg_nf1
+colnames(cna_nf1) <- c("sample", "chrom", "segment_start", "segment_end", "num_mark", "log2ratio")
+ascets_output_nf1 <- ascets(cna = cna_nf1, cytoband = read.delim("ascets-master/cytoband_coordinates_hg19.txt"), min_boc = 0.5, name = "out_all" , alteration_threshold = 0.7)
+
+AS_ascets_nf1 <- as.data.frame(ascets_output_nf1$aneu_scores$aneuploidy_score)
+AS_ascets_nf1$Genotype <- "NF1 mut"
+colnames(AS_ascets_nf1)[1] <- "AS"
+
+AS_ascets_final <- rbind(AS_ascets, AS_ascets_nf1)
+
+```
+
+## Fig 4K
+
+```{r}
+mycol4<-c(brewer.pal(5,"Blues")[c(2,3,4)],brewer.pal(5,"Greys")[c(2,3,4)])
+
+dp <- ggplot(AS_ascets_final, aes(x=Group, y=AS, fill=Genotype)) +
+  introdataviz::geom_split_violin(alpha = .9, trim = FALSE) +
+  geom_boxplot(width = .2, fatten = NULL, show.legend = FALSE) +
+  stat_summary(fun.data = "mean_se", geom = "pointrange", show.legend = F, 
+               position = position_dodge(.175)) +
+  coord_flip()+
+  scale_x_discrete(name = "", labels = "") +
+  scale_fill_manual(values=mycol4[c(4,3)])+
+  labs(x=NULL,y="Aneuploidy Score")+
+  annotate("text",y = 0.8,x=0.5,label="Wilcoxon t test, p=0.026",size=5)+
+  theme_classic(base_size=20)
+
+dp
+```
