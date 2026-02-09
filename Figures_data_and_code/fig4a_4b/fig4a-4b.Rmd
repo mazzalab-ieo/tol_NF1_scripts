@@ -1,0 +1,203 @@
+---
+title: "Fig 4A 4B"
+author: "Emanuele Bonetti"
+date: "5/30/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+suppressPackageStartupMessages(library(DESeq2))
+suppressPackageStartupMessages(library(PCAtools))
+suppressPackageStartupMessages(library(tidyverse))
+suppressPackageStartupMessages(library(circlize))
+suppressPackageStartupMessages(library(pathfindR))
+suppressPackageStartupMessages(library(PCGSE))
+suppressPackageStartupMessages(library(ggfortify))
+suppressPackageStartupMessages(library(hrbrthemes))
+suppressPackageStartupMessages(library(viridis))
+suppressPackageStartupMessages(library(ggforce))
+suppressPackageStartupMessages(library(grid))
+```
+
+# PCA
+
+```{r}
+# Copiare da NF1KO_gene_selector
+# prendere le liste dei pathway up e down reg e controllare l'espressione dei geni nei vari campioni con clustering gerarchico
+
+directory <- ("counts/") # PUT HERE GEO DATA GSE267855_RAW.tar
+
+sampleFiles <- list.files(directory, full.names = F)
+sampleFiles <- sampleFiles[1:18]
+sampleNames <- sampleFiles
+
+for(i in 1:length(sampleFiles)){
+  sample_name <- paste0(unlist(str_split(sampleFiles[i], "_"))[4:6], collapse = "_")
+  sampleNames[i] <- sample_name
+}
+
+sampleCondition <- c(rep("wt",6), rep("NF1ko", 12))
+batch_all <- c(rep("RNP",6), rep("P", 6), rep("RNP",6))
+treatment <- c(rep("noTreat", 3),rep("TDM1", 3), rep("noTreat", 3),rep("TDM1", 3), rep("noTreat", 3),rep("TDM1", 3))
+sampleTable <- data.frame(sampleName = sampleNames,
+                          fileName = sampleFiles,
+                          condition = sampleCondition,
+                          batch = batch_all,
+                          treatment = treatment
+                          )
+
+sampleTable$condition <- as.factor(sampleTable$condition)
+sampleTable$batch <- as.factor(sampleTable$batch)
+sampleTable$treatment <- as.factor(sampleTable$treatment)
+ 
+## Complete Table 
+# DESEQ
+dds <- DESeqDataSetFromHTSeqCount(sampleTable = sampleTable, 
+                                       directory = directory,
+                                       design = ~condition + treatment)
+
+dds <- DESeq(dds)
+res <- results(dds, name="condition_wt_vs_NF1ko")
+vsd <- vst(dds)
+ntd <- normTransform(dds)
+
+# BATCH correction Limma
+mat <- assay(vsd)
+mm <- model.matrix(~condition, colData(vsd))
+mat <- limma::removeBatchEffect(mat, batch=sampleTable$batch, design = mm) # LIMMA
+assay(vsd) <- mat
+
+mat <- assay(ntd)
+mm <- model.matrix(~condition, colData(ntd))
+mat <- limma::removeBatchEffect(mat, batch=sampleTable$batch, design = mm) # LIMMA
+assay(ntd) <- mat
+
+# Selecting tdm1 and nf1ko samples only rep3
+
+sampleTable_tdm1 <- sampleTable[c(7:9,10:12),]
+sampleTable_tdm1_WT <- sampleTable[c(1:6),]
+sampleTable_nf1 <- sampleTable[c(1:3,7:9,13:15),]
+sampleTable_nf1_clone3 <- sampleTable[c(1:3,7:9),]
+sampleTable_nf1_clone6 <- sampleTable[c(1:3,13:15),]
+
+# DESEQ NF1
+dds_nf1 <- DESeqDataSetFromHTSeqCount(sampleTable = sampleTable_nf1,
+                                       directory = directory,
+                                       design = ~condition)
+
+dds_nf1 <- DESeq(dds_nf1)
+res_nf1ko <- results(dds_nf1, contrast = c("condition", "NF1ko", "wt"))
+
+# DESEQ NF1 clone 3
+dds_nf1_clone3 <- DESeqDataSetFromHTSeqCount(sampleTable = sampleTable_nf1_clone3,
+                                       directory = directory,
+                                       design = ~condition)
+
+dds_nf1_clone3 <- DESeq(dds_nf1_clone3)
+res_nf1ko_clone3 <- results(dds_nf1_clone3, contrast = c("condition", "NF1ko", "wt"))
+
+degs_nf1_clone3 <- as.data.frame(res_nf1ko_clone3)
+degs_nf1_clone3$genes <- row.names(degs_nf1_clone3)
+
+vsd_nf1_clone3 <- vst(dds_nf1_clone3)
+ntd_nf1_clone3 <- normTransform(dds_nf1_clone3)
+
+# DESEQ NF1 clone 6
+dds_nf1_clone6 <- DESeqDataSetFromHTSeqCount(sampleTable = sampleTable_nf1_clone6,
+                                       directory = directory,
+                                       design = ~condition)
+
+dds_nf1_clone6 <- DESeq(dds_nf1_clone6)
+res_nf1ko_clone6 <- results(dds_nf1_clone6, contrast = c("condition", "NF1ko", "wt"))
+
+degs_nf1_clone6 <- as.data.frame(res_nf1ko_clone6)
+degs_nf1_clone6$genes <- row.names(degs_nf1_clone6)
+
+vsd_nf1_clone6 <- vst(dds_nf1_clone6)
+ntd_nf1_clone6 <- normTransform(dds_nf1_clone6)
+
+# DESEQ TDM1
+dds_tdm1 <- DESeqDataSetFromHTSeqCount(sampleTable = sampleTable %>% filter(treatment == "TDM1"),
+                                       directory = directory,
+                                       design = ~condition)
+
+dds_tdm1 <- DESeq(dds_tdm1)
+res_tdm1 <- results(dds_tdm1, contrast = c("condition", "NF1ko", "wt"))
+
+vsd_tdm1_all <- vst(dds_tdm1)
+
+# Counts NF1
+ntd_nf1 <- normTransform(dds_nf1)
+vsd_nf1 <- vst(dds_nf1)
+
+# BATCH correction Limma
+mat <- assay(vsd_nf1)
+mm <- model.matrix(~condition, colData(vsd_nf1))
+mat <- limma::removeBatchEffect(mat, batch=sampleTable_nf1$batch, design = mm) # LIMMA
+assay(vsd_nf1) <- mat
+
+# Counts TDM1
+ntd_tdm1 <- normTransform(dds_tdm1)
+vsd_tdm1 <- vst(dds_tdm1)
+
+# DESEQ TDM1 
+
+dds_wt_tdm1 <- DESeqDataSetFromHTSeqCount(sampleTable = sampleTable_tdm1_WT,
+                                       directory = directory,
+                                       design = ~treatment)
+
+dds_wt_tdm1 <- DESeq(dds_wt_tdm1)
+res_wt_tdm1 <- results(dds_wt_tdm1, contrast = c("treatment", "TDM1", "noTreat"))
+
+degs_wt_tdm1 <- as.data.frame(res_wt_tdm1)
+degs_wt_tdm1$genes <- row.names(degs_wt_tdm1)
+
+vsd_wt_tdm1 <- vst(dds_wt_tdm1)
+ntd_wt_tdm1 <- normTransform(dds_wt_tdm1)
+
+```
+
+## Fig 4A
+
+```{r}
+# PCA 
+p <- pca(assay(vsd), metadata = colData(dds))
+biplot(p, colby = "condition", showLoadings = F, shape = "treatment")
+```
+
+## Fig 4B
+
+```{r}
+degs_nf1_ko_tdm1$genes <- row.names(degs_nf1_ko_tdm1)
+degs <- inner_join(degs_wt_tdm1, degs_nf1_ko_tdm1, by = c("genes" = "genes"), suffix = c("_wt", "_nf1ko"))
+degs <- degs %>% filter(padj_nf1ko < 0.05 | padj_wt < 0.05)
+degs <- degs %>% mutate(GOIs = if_else((log2FoldChange_wt > 1 & log2FoldChange_nf1ko < 1 & log2FoldChange_nf1ko > -1)
+                                       | (log2FoldChange_nf1ko > 1 & log2FoldChange_wt < 1 & log2FoldChange_wt > -1)
+                                       | (log2FoldChange_wt < -1 & log2FoldChange_nf1ko > -1 & log2FoldChange_nf1ko < 1)
+                                       | (log2FoldChange_nf1ko < -1 & log2FoldChange_wt > -1 & log2FoldChange_wt < 1),
+ "yes", "no")
+ )
+
+p <- degs %>% mutate(Cluster = if_else(log2FoldChange_nf1ko < -1 & log2FoldChange_wt > -1 & log2FoldChange_wt < 1, "Cluster", "non-Cluster")) %>% mutate(Size = if_else(log2FoldChange_nf1ko < -1 & log2FoldChange_wt > -1 & log2FoldChange_wt < 1, 1.01, 1)) %>% mutate(mitotic_spindle = if_else(genes %in% genes_in_MS, "Mitotic Spindle","")) %>% filter(Cluster == "Cluster") %>% ggplot(aes(x = log2FoldChange_wt, y = log2FoldChange_nf1ko)) +
+  geom_point(aes(color = mitotic_spindle, alpha = 0.5)) +
+  geom_text_repel(data = subset(degs, genes %in% genes_in_MS),
+                  aes(label = genes),
+                  size = 4.5,
+                  box.padding = unit(0.35, "lines"),
+                  point.padding = unit(0.3, "lines")) +
+  scale_size(range = c(1,2)) +
+  scale_color_manual(values = c("lightgrey", "black")) +
+  theme_bw(base_size = 16) +
+  theme( legend.position = "none", panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(), panel.border = element_blank())+
+  geom_segment(aes(x = -1, y =-1, xend = -1, yend = -2)) +
+  geom_segment(aes(x = 0, y =-1, xend = 0, yend = -2)) +
+  geom_segment(aes(x = -1, y =-1, xend = 0, yend = -1)) +
+  geom_segment(aes(x = -1, y =-2, xend = 0, yend = -2)) +
+  ylim(c(-2,-1)) +
+  xlim(c(-1,0)) +
+  ylab("Log2FoldChange NF1KO TDM1 vs NF1KO") +
+  xlab("Log2FoldChange MOCK TDM1 vs MOCK")
+p
+```
